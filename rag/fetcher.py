@@ -26,80 +26,57 @@ load_dotenv()
 
 async def resolve_url(input: str) -> str:
     """
-    Resolves the official documentation URL for a given technology or topic.
+    Fetches the documentation URL for the query.
 
-    Steps:
-    1. Ask the LLM to provide the documentation URL.
-    2. Check whether the returned URL is valid using an HTTP HEAD request.
-    3. If the URL is invalid, fall back to DuckDuckGo search.
-    4. Prefer links that look like official documentation pages.
+    1. Try getting the link from the LLM.
+    2. If that URL works, return it.
+    3. If it fails or cannot resolve, fall back to DuckDuckGo search.
     """
 
-    # Initialize the LLM model
     model = ChatGroq(model="qwen/qwen3-32b")
-
-    # Configure the model to return structured output matching UrlResponse
     url_model = model.with_structured_output(UrlResponse)
 
-    # Ask the model to provide a documentation link for the given input
     response = await url_model.ainvoke(
         f"Provide the documentation link for the {input}"
     )
 
     url = response.url
-
-    # Normalize the technology name for easier URL matching
     tech_name = input.lower().replace(" ", "")
 
     async with httpx.AsyncClient() as client:
-        # First, check if the LLM-provided URL is reachable
-        response_url = await client.head(url, follow_redirects=True)
-
-        if response_url.status_code == 200:
+        if await is_url_alive(client, url):
             return url
 
-        else:
-            # If the LLM URL is invalid, search DuckDuckGo for official docs
-            with DDGS() as ddgs:
-                result = ddgs.text(
-                    f"{input} official documentation",
-                    max_results=5
+        with DDGS() as ddgs:
+            result = ddgs.text(
+                f"{input} official documentation",
+                max_results=5
+            )
+
+            if not result:
+                raise Exception(
+                    "Could not resolve documentation URL, please try again"
                 )
 
-                if not result:
-                    raise Exception(
-                        "Could not resolve documentation URL, please try again"
-                    )
+            doc_url = None
 
-                doc_url = None
+            for r in result:
+                href = r["href"]
 
-                # Prefer documentation-like URLs containing docs or github.io
-                for r in result:
-                    href = r["href"]
+                if any(keyword in href for keyword in ["docs", "github.io"]):
+                    if tech_name in href.lower():
+                        doc_url = href
+                        break
 
-                    if any(keyword in href for keyword in ["docs", "github.io"]):
-                        if tech_name in href.lower():
-                            doc_url = href
-                            break
+            if not doc_url:
+                doc_url = result[0]["href"]
 
-                # If no strongly matching docs URL is found, use the first result
-                if not doc_url:
-                    doc_url = result[0]["href"]
+            url = doc_url
 
-                url = doc_url
+            if await is_url_alive(client, url):
+                return url
 
-                # Validate the fallback URL
-                response_url = await client.head(url, follow_redirects=True)
-
-                print(f"DDGS URL status: {response_url.status_code}")  # debug
-
-                if response_url.status_code == 200:
-                    return url
-
-                else:
-                    raise Exception(
-                        "Please check if there exist docs for this tech"
-                    )
+            raise Exception("Please check if there exist docs for this tech")
 
 
 async def crawl_structure(site_to_crawl: str) -> str:
@@ -181,7 +158,6 @@ async def crawl_sidebar(url: str) -> list[dict]:
     async with httpx.AsyncClient() as client:
         response = await client.get(url, follow_redirects=True)
 
-    print(f"Crawling sidebar for: {url}")
 
     # Ensure the page loaded successfully
     if response.status_code == 200:
@@ -209,11 +185,9 @@ async def crawl_sidebar(url: str) -> list[dict]:
     if not sidebar:
         raise Exception("Could not find sidebar navigation on this page")
 
-    print(f"Sidebar found: {sidebar.name}, class: {sidebar.get('class')}")
 
     links = sidebar.find_all("a")
 
-    print(f"Total links in sidebar: {len(links)}")
 
     # Parse the root URL so relative links can be converted to absolute links
     parsed_root = urlparse(url)
@@ -227,7 +201,6 @@ async def crawl_sidebar(url: str) -> list[dict]:
     for a in links:
         href = a.get("href")
 
-        print(f"Raw href: {href}")  # add this
 
         if not href:
             continue
@@ -402,3 +375,29 @@ Priority must be RED, YELLOW, or BLUE. Include ALL pages from input.""")
 
     except json.JSONDecodeError as e:
         raise Exception(f"LLM returned invalid JSON: {e}\nResponse: {content}")
+
+
+
+async def is_url_alive(client: httpx.AsyncClient, url: str) -> bool:
+    """
+    Checks whether a URL is reachable.
+
+    Some sites block HEAD requests, so we try HEAD first
+    and then fall back to GET if needed.
+    """
+    try:
+        response = await client.head(url, follow_redirects=True, timeout=10)
+
+        if response.status_code == 200:
+            return True
+
+        # Some documentation sites do not allow HEAD requests
+        if response.status_code in [403, 405]:
+            response = await client.get(url, follow_redirects=True, timeout=10)
+            return response.status_code == 200
+
+        return False
+
+    except httpx.RequestError:
+        # Covers DNS errors, connection errors, timeouts, invalid URLs, etc.
+        return False
