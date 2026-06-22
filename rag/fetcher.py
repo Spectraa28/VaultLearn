@@ -7,6 +7,7 @@ and parse the HTML to extract data from it.
 
 import httpx
 import json
+import re
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 from langchain_groq import ChatGroq
@@ -63,20 +64,19 @@ async def resolve_url(input: str) -> str:
             for r in result:
                 href = r["href"]
 
-                if any(keyword in href for keyword in ["docs", "github.io"]):
-                    if tech_name in href.lower():
-                        doc_url = href
-                        break
+                if not any(keyword in href for keyword in ["docs", "github.io"]):
+                    continue
+                if tech_name not in href.lower():
+                    continue
+                
+                try:
+                    page_response = await client.get(href,follow_redirects=True)
+                    if is_docs_page(page_response.text):
+                        return href
+                except (httpx.ConnectError,httpx.TimeoutException):
+                    continue
 
-            if not doc_url:
-                doc_url = result[0]["href"]
-
-            url = doc_url
-
-            if await is_url_alive(client, url):
-                return url
-
-            raise Exception("Please check if there exist docs for this tech")
+            raise Exception("Could not find valid documentation URL, please try again")
 
 
 async def crawl_structure(site_to_crawl: str) -> str:
@@ -300,30 +300,16 @@ async def crawl_js_sidebar(url: str) -> list[dict]:
 
 
 async def generate_study_plan(pages: list[dict], topic: str) -> StudyPlan:
-    """
-    Generates a structured study plan from documentation pages.
-
-    The LLM receives page titles and URLs, then returns a JSON object
-    matching the StudyPlan schema.
-    """
-
-    # Keep only the fields needed by the LLM
-    pages_new = [
-        {
-            "title": p["title"],
-            "url": p["url"]
-        }
-        for p in pages
-    ]
-
-    # Initialize the LLM model for study plan generation
+    # build title->url lookup map
+    url_map = {p["title"]: p["url"] for p in pages}
+    titles_only = [p["title"] for p in pages]
+    
     model = ChatGroq(model="llama-3.3-70b-versatile")
 
-    # System prompt instructing the model to return strict JSON
     sys_message = SystemMessage(f"""You are a Principal engineer creating a study plan.
 
-Given these documentation pages for {topic}:
-{pages_new}
+Given these documentation page titles for {topic}:
+{titles_only}
 
 Return ONLY a JSON object with EXACTLY this structure, no backticks, no explanation:
 {{
@@ -342,8 +328,7 @@ Return ONLY a JSON object with EXACTLY this structure, no backticks, no explanat
       "topics": [
         {{
           "topic_number": 1,
-          "title": "Topic Title",
-          "source_url": "exact url from input",
+          "title": "exact title from input list",
           "skills_acquired": ["skill1"]
         }}
       ]
@@ -351,31 +336,26 @@ Return ONLY a JSON object with EXACTLY this structure, no backticks, no explanat
   ]
 }}
 
-Priority must be RED, YELLOW, or BLUE. Include ALL pages from input.""")
+Priority must be RED, YELLOW, or BLUE. Include ALL titles. Topics must use exact titles from input.""")
 
-    # Invoke the model
     response = await model.ainvoke([sys_message])
-
-    # Extract raw text response
     content = response.content.strip()
-
-    # Strip markdown backticks if present
     if content.startswith("```"):
         content = content.split("```")[1]
-
         if content.startswith("json"):
             content = content[4:]
-
     content = content.strip()
-
-    # Parse the JSON and validate it against the StudyPlan schema
+    
     try:
         data = json.loads(content)
+        # map URLs back using title lookup
+        for module in data["modules"]:
+            for topic_item in module["topics"]:
+                title = topic_item["title"]
+                topic_item["source_url"] = url_map.get(title, "")
         return StudyPlan(**data)
-
     except json.JSONDecodeError as e:
         raise Exception(f"LLM returned invalid JSON: {e}\nResponse: {content}")
-
 
 
 async def is_url_alive(client: httpx.AsyncClient, url: str) -> bool:
@@ -401,3 +381,15 @@ async def is_url_alive(client: httpx.AsyncClient, url: str) -> bool:
     except httpx.RequestError:
         # Covers DNS errors, connection errors, timeouts, invalid URLs, etc.
         return False
+    
+    
+def is_docs_page(html: str) -> bool:
+    soup = BeautifulSoup(html,"html.parser")
+    doc_keywords = ["installation", "api reference", "parameters", "usage", "getting started", "module", "function", "class", "returns"]
+    marketing_keywords = ["pricing", "enterprise", "sign up", "free trial", "contact sales"]
+    
+    doc_score = sum(1 for kw in doc_keywords 
+        if soup.find(string=re.compile(kw, re.IGNORECASE)))
+    marketing_score = sum(1 for kw in marketing_keywords 
+        if soup.find(string=re.compile(kw, re.IGNORECASE)))
+    return doc_score >= 2 and doc_score > marketing_score
