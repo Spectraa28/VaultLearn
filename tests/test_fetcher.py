@@ -1,12 +1,18 @@
 import asyncio
-from agent.graph import app
+from rag.chunker import chunk_page
 
 async def main():
-    result = await app.ainvoke({
-        "user_input": "LangGraph"
-    })
-    print(f"Resolved URL: {result['resolved_url']}")
-    print(f"Found {len(result['pages'])} pages")
-    print(result['study_plan'])
+    chunks = await chunk_page(
+        url="https://docs.langchain.com/oss/python/langgraph/quickstart",
+        module_number=1,
+        module_name="Introduction to LangGraph",
+        topic_number=2
+    )
+    print(f"Total chunks: {len(chunks)}")
+    for i, chunk in enumerate(chunks[:4]):
+        print(f"\nChunk {i}:")
+        print(f"  heading: {chunk['heading']}")
+        print(f"  anchor:  {chunk['anchor_url']}")
+        print(f"  preview: {chunk['text'][:80]}")
 
 asyncio.run(main())
