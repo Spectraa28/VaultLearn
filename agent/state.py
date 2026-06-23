@@ -14,3 +14,4 @@ class VaultLearnState(TypedDict):
     struggle_signals: Optional[dict]
     struggle_scores: Optional[dict]
     notes_written: Optional[bool]
+    collection: Optional[object]

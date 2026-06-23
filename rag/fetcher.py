@@ -15,10 +15,11 @@ from dotenv import load_dotenv
 from schemas.models import UrlResponse
 from urllib.parse import urlparse
 from pathlib import Path
-from schemas.models import StudyPlan, Topic, Module
-from langchain.messages import SystemMessage
-import requests
+from schemas.models import StudyPlan, Topic, Module,PlannedModule, PlannedStudyPlan
+from langchain_core.messages import SystemMessage
 from playwright.async_api import async_playwright
+from typing import Literal
+
 
 
 # Load environment variables from the .env file
@@ -79,7 +80,7 @@ async def resolve_url(input: str) -> str:
             raise Exception("Could not find valid documentation URL, please try again")
 
 
-async def crawl_structure(site_to_crawl: str) -> str:
+async def crawl_structure(site_to_crawl: str) -> list[dict]:
     """
     Crawls the documentation structure of a given site.
 
@@ -108,9 +109,12 @@ async def crawl_structure(site_to_crawl: str) -> str:
     urls = soup.find_all("url")
 
     # Create a prefix based on the current documentation path
-    path = Path(parsed.path)
-    parent = str(path.parent).rstrip("/")
-    prefix = f"{parsed.scheme}://{parsed.netloc}{parent}/"
+    path = parsed.path.rstrip("/")
+    if path:
+        parent = str(Path(path).parent).rstrip("/")
+        prefix = f"{parsed.scheme}://{parsed.netloc}{parent}/"
+    else:
+        prefix = f"{parsed.scheme}://{parsed.netloc}/"
 
     result = []
 
@@ -133,11 +137,10 @@ async def crawl_structure(site_to_crawl: str) -> str:
             "lastmod": lastmod
         })
 
-    # Check if all URLs are index-like pages ending with "/"
-    all_indexes = all(p["url"].endswith("/") for p in result)
+    
 
     # Fallback to static sidebar crawling if sitemap data is not useful
-    if response.status_code != 200 or len(result) < 5 or all_indexes:
+    if response.status_code != 200 or len(result) < 5:
         result = await crawl_sidebar(site_to_crawl)
 
     # Fallback to JavaScript-rendered sidebar crawling if still insufficient
@@ -225,6 +228,8 @@ async def crawl_sidebar(url: str) -> list[dict]:
             "lastmod": "unknown"
         })
 
+    if not result:
+        return []
     return result
 
 
@@ -248,7 +253,7 @@ async def crawl_js_sidebar(url: str) -> list[dict]:
         page = await browser.new_page()
 
         # Wait until the page has finished loading network resources
-        await page.goto(url, wait_until="networkidle")
+        await page.goto(url, wait_until="networkidle",timeout=15000)
 
         # Extract all anchor links from the rendered page
         links = await page.eval_on_selector_all(
@@ -300,63 +305,124 @@ async def crawl_js_sidebar(url: str) -> list[dict]:
 
 
 async def generate_study_plan(pages: list[dict], topic: str) -> StudyPlan:
-    # build title->url lookup map
-    url_map = {p["title"]: p["url"] for p in pages}
-    titles_only = [p["title"] for p in pages]
-    
+    """
+    Uses the LLM to generate the learning plan,
+    but uses Python to safely attach exact source URLs.
+    """
+
+    if not pages:
+        raise ValueError("Cannot generate study plan from empty pages")
+
+    pages_for_llm = [
+        {
+            "index": i,
+            "title": page.get("title", "")
+        }
+        for i, page in enumerate(pages)
+    ]
+
     model = ChatGroq(model="llama-3.3-70b-versatile")
 
-    sys_message = SystemMessage(f"""You are a Principal engineer creating a study plan.
+    planner_model = model.with_structured_output(PlannedStudyPlan)
 
-Given these documentation page titles for {topic}:
-{titles_only}
+    prompt = SystemMessage(f"""
+You are a Principal Engineer creating a study plan for {topic}.
 
-Return ONLY a JSON object with EXACTLY this structure, no backticks, no explanation:
-{{
-  "title": "{topic}",
-  "total_estimated_hours": <number>,
-  "skills_acquired": ["skill1", "skill2"],
-  "disclaimer": "Estimates based on page titles only",
-  "modules": [
-    {{
-      "module_number": 1,
-      "title": "Module Title",
-      "estimated_hours": <number>,
-      "priority": "RED",
-      "estimates_refined": false,
-      "disclaimer": "Estimate based on title only",
-      "topics": [
-        {{
-          "topic_number": 1,
-          "title": "exact title from input list",
-          "skills_acquired": ["skill1"]
-        }}
-      ]
-    }}
-  ]
-}}
+You are given documentation pages:
+{pages_for_llm}
 
-Priority must be RED, YELLOW, or BLUE. Include ALL titles. Topics must use exact titles from input.""")
+Create a structured learning plan.
 
-    response = await model.ainvoke([sys_message])
-    content = response.content.strip()
-    if content.startswith("```"):
-        content = content.split("```")[1]
-        if content.startswith("json"):
-            content = content[4:]
-    content = content.strip()
-    
-    try:
-        data = json.loads(content)
-        # map URLs back using title lookup
-        for module in data["modules"]:
-            for topic_item in module["topics"]:
-                title = topic_item["title"]
-                topic_item["source_url"] = url_map.get(title, "")
-        return StudyPlan(**data)
-    except json.JSONDecodeError as e:
-        raise Exception(f"LLM returned invalid JSON: {e}\nResponse: {content}")
+Rules:
+- Return modules with page_indexes.
+- page_indexes must only use indexes from the input list.
+- Do not invent URLs.
+- Do not include source_url.
+- Group related pages into meaningful modules.
+- Priority must be RED, YELLOW, or BLUE.
+- RED means core/must learn.
+- YELLOW means important/intermediate.
+- BLUE means optional/supporting.
+""")
 
+    planned = await planner_model.ainvoke([prompt])
+
+    final_modules = []
+    used_indexes = set()
+
+    for module in planned.modules:
+        topics = []
+
+        for topic_number, page_index in enumerate(module.page_indexes, start=1):
+            if page_index < 0 or page_index >= len(pages):
+                continue
+
+            page = pages[page_index]
+            used_indexes.add(page_index)
+
+            topics.append(
+                Topic(
+                    topic_number=topic_number,
+                    title=page.get("title", ""),
+                    source_url=page.get("url", ""),
+                    skills_acquired=module.skills_acquired
+                )
+            )
+
+        if not topics:
+            continue
+
+        final_modules.append(
+            Module(
+                module_number=module.module_number,
+                title=module.title,
+                estimated_hours=module.estimated_hours,
+                priority=module.priority,
+                estimated_refined=False,
+                disclaimer="Estimate based on documentation page titles only",
+                topics=topics
+            )
+        )
+
+    missing_indexes = [
+        i for i in range(len(pages))
+        if i not in used_indexes
+    ]
+
+    if missing_indexes:
+        fallback_topics = []
+
+        for topic_number, page_index in enumerate(missing_indexes, start=1):
+            page = pages[page_index]
+
+            fallback_topics.append(
+                Topic(
+                    topic_number=topic_number,
+                    title=page.get("title", ""),
+                    source_url=page.get("url", ""),
+                    skills_acquired=[topic]
+                )
+            )
+
+        final_modules.append(
+            Module(
+                module_number=len(final_modules) + 1,
+                title="Additional Documentation",
+                estimated_hours=max(1, round(len(fallback_topics) * 0.5)),
+                priority="BLUE",
+                estimated_refined=False,
+                disclaimer="Pages not assigned by LLM planner",
+                topics=fallback_topics
+            )
+        )
+
+    return StudyPlan(
+        title=planned.title or topic,
+        total_estimated_hours=planned.total_estimated_hours,
+        skills_acquired=planned.skills_acquired,
+        disclaimer=planned.disclaimer or "Estimates depend on learner speed.",
+        modules=final_modules
+    )
 
 async def is_url_alive(client: httpx.AsyncClient, url: str) -> bool:
     """
