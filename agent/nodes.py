@@ -97,45 +97,54 @@ async def build_collection_node(state:VaultLearnState) -> VaultLearnState:
     
     return {"collection":collection}
 
-async def study_session_node(state:VaultLearnState) -> VaultLearnState:
-    #REad from state
+async def study_session_node(state: VaultLearnState) -> VaultLearnState:
+    # Read from state
     input = state["user_input"]
     collection = state["collection"]
-    module_number = state["current_module_number"]
+    module_number = state.get("current_module_number", 1)
     study_plan = state["study_plan"]
     message = state["messages"]
     struggle_signal = state["struggle_signals"]
     anchor_url = state["anchor_urls"]
-    
-    # REtrieve the chunks 
-    chunks = retrieve(collection,input,module_number)
-    
+
+    # Early exit for end session
+    if input.lower().strip() == "end session":
+        return {
+            "messages": message or [],
+            "struggle_signals": struggle_signal or {},
+            "anchor_urls": [],
+        }
+
+    # Retrieve the chunks
+    chunks = retrieve(collection, input, module_number)
     context_for_llm = "\n\n".join(chunk["text"] for chunk in chunks)
-        
-    sys_message =SystemMessage("You are an expert teacher. Teach using only the context provided. Always cite the source section")
+
+    sys_message = SystemMessage("You are an expert teacher. Teach using only the context provided. Always cite the source section")
     hum_message = HumanMessage(f"{input}   the given context is this {context_for_llm}")
-    
+
     model = ChatGroq(model="llama-3.3-70b-versatile")
-    
-    response = await model.ainvoke([sys_message,hum_message])
-    
+    response = await model.ainvoke([sys_message, hum_message])
+
     structured_llm = model.with_structured_output(StruggleSignal)
     struggle_response = await structured_llm.ainvoke([
-    HumanMessage(
-        f"Did the user struggle? Answer with true or false (boolean, not string).\n"
-        f"Question: {input}\n"
-        f"Answer: {response.content}"
-    )
-])
+        HumanMessage(
+            f"Did the user struggle? Answer with true or false (boolean, not string).\n"
+            f"Question: {input}\n"
+            f"Answer: {response.content}"
+        )
+    ])
+
     updated_struggles = dict(struggle_signal or {})
     if struggle_response.struggled:
         updated_struggles[input] = struggle_response.reason
+
     updated_messages = (message or []) + [HumanMessage(input), AIMessage(response.content)]
     anchor_urls = [chunk["metadata"]["anchor_url"] for chunk in chunks]
+
     return {
         "messages": updated_messages,
-        "anchor_urls":anchor_urls,
-        "struggle_signals":updated_struggles
+        "anchor_urls": anchor_urls,
+        "struggle_signals": updated_struggles,
     }
     
 

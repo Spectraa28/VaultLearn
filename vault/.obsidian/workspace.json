@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "LangGraph Study Plan_struggles.md",
+                "file": "Structured Learning Plan for React_session.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "LangGraph Study Plan_struggles"
+              "title": "Structured Learning Plan for React_session"
             }
           }
         ]
@@ -188,8 +188,8 @@
     "Structured Learning Plan for React_review.md",
     "Structured Learning Plan for React_struggles.md",
     "Structured Learning Plan for React_session.md",
-    "LangGraph Study Plan_session.md",
     "LangGraph Study Plan_struggles.md",
+    "LangGraph Study Plan_session.md",
     "LangGraph Study Plan_review.md",
     "test_note.md"
   ]
