@@ -13,7 +13,7 @@ from ddgs import DDGS
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 from schemas.models import UrlResponse
-from urllib.parse import urlparse
+from urllib.parse import urlparse , urljoin
 from pathlib import Path
 from schemas.models import StudyPlan, Topic, Module,PlannedModule, PlannedStudyPlan
 from langchain_core.messages import SystemMessage
@@ -22,62 +22,100 @@ from typing import Literal
 
 
 
+
 # Load environment variables from the .env file
 load_dotenv()
 
 
 async def resolve_url(input: str) -> str:
-    """
-    Fetches the documentation URL for the query.
-
-    1. Try getting the link from the LLM.
-    2. If that URL works, return it.
-    3. If it fails or cannot resolve, fall back to DuckDuckGo search.
-    """
-
     model = ChatGroq(model="qwen/qwen3-32b")
     url_model = model.with_structured_output(UrlResponse)
-
-    response = await url_model.ainvoke(
-        f"Provide the documentation link for the {input}"
-    )
-
-    url = response.url
     tech_name = input.lower().replace(" ", "")
 
     async with httpx.AsyncClient() as client:
-        if await is_url_alive(client, url):
-            return url
+        for _ in range(3):
+            try:
+                response = await url_model.ainvoke(
+                    f"What is the official documentation URL for {input}? "
+                    f"Return only the main docs homepage URL, not a specific page. "
+                    f"Must be a real, currently active URL."
+                )
+                url = response.url
+            except Exception:
+                # fallback: extract URL from plain text response
+                raw = await model.ainvoke(
+                    f"What is the official documentation URL for {input}? Reply with only the URL, nothing else."
+                )
+                urls = re.findall(r'https?://\S+', raw.content)
+                if not urls:
+                    continue
+                url = urls[0].rstrip(".")
+
+            if await is_url_alive(client, url):
+                try:
+                    page_response = await client.get(
+                        url,
+                        follow_redirects=True,
+                        timeout=15
+                    )
+
+                    final_url = str(page_response.url)
+
+                    # If LLM already gave us a docs page, return it
+                    if is_docs_page(page_response.text, final_url):
+                        return final_url.rstrip("/")
+
+                    # If LLM gave homepage/marketing page, find docs link from it
+                    docs_url = await find_docs_link(
+                        client=client,
+                        base_url=final_url,
+                        html=page_response.text
+                    )
+
+                    if docs_url:
+                        return docs_url.rstrip("/")
+
+                except httpx.RequestError:
+                    pass
 
         with DDGS() as ddgs:
-            result = ddgs.text(
-                f"{input} official documentation",
-                max_results=5
-            )
+            results = ddgs.text(f"{input} official documentation", max_results=5)
 
-            if not result:
-                raise Exception(
-                    "Could not resolve documentation URL, please try again"
-                )
+            if not results:
+                raise Exception("Could not resolve documentation URL")
 
-            doc_url = None
-
-            for r in result:
+            for r in results:
                 href = r["href"]
 
-                if not any(keyword in href for keyword in ["docs", "github.io"]):
-                    continue
-                if tech_name not in href.lower():
-                    continue
-                
                 try:
-                    page_response = await client.get(href,follow_redirects=True)
-                    if is_docs_page(page_response.text):
-                        return href
-                except (httpx.ConnectError,httpx.TimeoutException):
+                    page_response = await client.get(
+                        href,
+                        follow_redirects=True,
+                        timeout=15
+                    )
+                    tech_name = input.lower().replace(" ", "")
+                    final_url = str(page_response.url)
+                    parsed_final = urlparse(final_url)
+                    if tech_name not in parsed_final.path.lower() and tech_name not in parsed_final.netloc.lower():
+                        continue
+                    # If search result itself is docs, return it
+                    if is_docs_page(page_response.text, final_url):
+                        return final_url.rstrip("/")
+
+                    # If search result is homepage, follow docs link from it
+                    docs_url = await find_docs_link(
+                        client=client,
+                        base_url=final_url,
+                        html=page_response.text
+                    )
+
+                    if docs_url:
+                        return docs_url.rstrip("/")
+
+                except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
                     continue
 
-            raise Exception("Could not find valid documentation URL, please try again")
+    raise Exception("Could not find valid documentation URL")
 
 
 async def crawl_structure(site_to_crawl: str) -> list[dict]:
@@ -166,7 +204,7 @@ async def crawl_sidebar(url: str) -> list[dict]:
     if response.status_code == 200:
         html_content = response.text
     else:
-        raise Exception("Failed to load the html page")
+        raise []
 
     # Parse the HTML content
     soup = BeautifulSoup(html_content, "html.parser")
@@ -186,8 +224,7 @@ async def crawl_sidebar(url: str) -> list[dict]:
 
     # Stop if no sidebar or navigation block is found
     if not sidebar:
-        raise Exception("Could not find sidebar navigation on this page")
-
+        return []
 
     links = sidebar.find_all("a")
 
@@ -253,7 +290,7 @@ async def crawl_js_sidebar(url: str) -> list[dict]:
         page = await browser.new_page()
 
         # Wait until the page has finished loading network resources
-        await page.goto(url, wait_until="networkidle",timeout=15000)
+        await page.goto(url, wait_until="domcontentloaded",timeout=15000)
 
         # Extract all anchor links from the rendered page
         links = await page.eval_on_selector_all(
@@ -318,10 +355,10 @@ async def generate_study_plan(pages: list[dict], topic: str) -> StudyPlan:
             "index": i,
             "title": page.get("title", "")
         }
-        for i, page in enumerate(pages)
+        for i, page in enumerate(pages[:30])
     ]
 
-    model = ChatGroq(model="llama-3.3-70b-versatile")
+    model = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct")
 
     planner_model = model.with_structured_output(PlannedStudyPlan)
 
@@ -449,13 +486,155 @@ async def is_url_alive(client: httpx.AsyncClient, url: str) -> bool:
         return False
     
     
-def is_docs_page(html: str) -> bool:
-    soup = BeautifulSoup(html,"html.parser")
-    doc_keywords = ["installation", "api reference", "parameters", "usage", "getting started", "module", "function", "class", "returns"]
-    marketing_keywords = ["pricing", "enterprise", "sign up", "free trial", "contact sales"]
-    
-    doc_score = sum(1 for kw in doc_keywords 
-        if soup.find(string=re.compile(kw, re.IGNORECASE)))
-    marketing_score = sum(1 for kw in marketing_keywords 
-        if soup.find(string=re.compile(kw, re.IGNORECASE)))
+def is_docs_page(html: str, url: str = "") -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+
+    page_text = soup.get_text(" ", strip=True).lower()
+    url_text = url.lower()
+
+    doc_keywords = [
+        "installation",
+        "install",
+        "api reference",
+        "parameters",
+        "usage",
+        "getting started",
+        "quickstart",
+        "module",
+        "function",
+        "class",
+        "returns",
+        "guide",
+        "tutorial",
+        "reference",
+        "configuration",
+        "examples",
+    ]
+
+    marketing_keywords = [
+        "pricing",
+        "enterprise",
+        "sign up",
+        "free trial",
+        "contact sales",
+        "book a demo",
+        "customers",
+    ]
+
+    doc_score = sum(1 for kw in doc_keywords if kw in page_text)
+    marketing_score = sum(1 for kw in marketing_keywords if kw in page_text)
+
+    # URL itself can strongly indicate docs
+    if "docs." in url_text:
+        doc_score += 3
+
+    if "/docs" in url_text:
+        doc_score += 3
+
+    if "documentation" in url_text:
+        doc_score += 2
+
+    if "reference" in url_text:
+        doc_score += 2
+
     return doc_score >= 2 and doc_score > marketing_score
+
+async def find_docs_link(
+    client: httpx.AsyncClient,
+    base_url: str,
+    html: str
+) -> str | None:
+    """
+    Finds and validates a documentation link from a page.
+
+    This helps when the LLM or search gives us a product homepage
+    that contains a Docs/Documentation link.
+    """
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    parsed_base = urlparse(base_url)
+    base_domain = parsed_base.netloc.replace("www.", "")
+
+    docs_candidates = []
+
+    docs_keywords = [
+        "docs",
+        "documentation",
+        "learn",
+        "guide",
+        "guides",
+        "tutorial",
+        "quickstart",
+        "getting started",
+        "api reference",
+        "reference",
+    ]
+
+    bad_keywords = [
+        "pricing",
+        "blog",
+        "login",
+        "sign in",
+        "sign up",
+        "contact",
+        "sales",
+        "careers",
+        "enterprise",
+    ]
+
+    for a in soup.find_all("a"):
+        href = a.get("href")
+        text = a.get_text(" ", strip=True).lower()
+
+        if not href:
+            continue
+
+        href_lower = href.lower()
+
+        if href_lower.startswith(("mailto:", "javascript:", "tel:")):
+            continue
+
+        full_url = urljoin(base_url, href)
+        parsed_url = urlparse(full_url)
+        candidate_domain = parsed_url.netloc.replace("www.", "")
+
+        # Keep same domain or docs subdomain
+        if base_domain not in candidate_domain and candidate_domain not in base_domain:
+            continue
+
+        combined = f"{full_url.lower()} {text}"
+
+        if any(bad in combined for bad in bad_keywords):
+            continue
+
+        score = sum(1 for keyword in docs_keywords if keyword in combined)
+
+        if "docs" in parsed_url.netloc.lower():
+            score += 3
+
+        if "/docs" in parsed_url.path.lower():
+            score += 3
+
+        if score > 0:
+            docs_candidates.append((score, full_url))
+
+    docs_candidates.sort(key=lambda item: item[0], reverse=True)
+
+    for _, candidate_url in docs_candidates[:5]:
+        try:
+            response = await client.get(
+                candidate_url,
+                follow_redirects=True,
+                timeout=15
+            )
+
+            final_url = str(response.url)
+
+            if response.status_code == 200 and is_docs_page(response.text, final_url):
+                return final_url
+
+        except httpx.RequestError:
+            continue
+
+    return None

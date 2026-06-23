@@ -5,6 +5,7 @@ from rag.chunker import chunk_page
 from schemas.models import StruggleSignal
 from langchain_core.messages import SystemMessage,HumanMessage , AIMessage
 from langchain_groq import ChatGroq
+from memory.vault import generate_review_schedule,read_note, generate_session_note,generate_struggle_note , write_note
 
 async def resolve_url_node(state:VaultLearnState) -> VaultLearnState:
     # REad from state
@@ -19,6 +20,8 @@ async def crawl_structure_node(state:VaultLearnState) -> VaultLearnState:
     url = state["resolved_url"]
     #do something
     struct = await crawl_structure(url)
+    # in crawl_structure_node, add this:
+    print(f"Crawling: {url}")
     # return the updated state 
     return {"pages":struct}
     
@@ -72,7 +75,17 @@ async def build_collection_node(state:VaultLearnState) -> VaultLearnState:
                 f"    Created {len(chunks)} chunks",
                 flush=True
             )
-            all_chunks.extend(chunks)
+            chunks = await chunk_page(
+            url=topic.source_url,
+            module_number=module.module_number,
+            module_name=module.title,
+            topic_number=topic.topic_number
+        )
+        if not chunks:
+            print(f"    Skipped (empty)", flush=True)
+            continue
+        print(f"    Created {len(chunks)} chunks", flush=True)
+        all_chunks.extend(chunks)
     print(f"\nFinished chunking. Total chunks: {len(all_chunks)}", flush=True)
     collection_name = study_plan.title.lower().replace(" ","-")
     
@@ -107,7 +120,13 @@ async def study_session_node(state:VaultLearnState) -> VaultLearnState:
     response = await model.ainvoke([sys_message,hum_message])
     
     structured_llm = model.with_structured_output(StruggleSignal)
-    struggle_response = await structured_llm.ainvoke([ HumanMessage(f"Did the user struggle? Question: {input} Answer: {response.content}")])
+    struggle_response = await structured_llm.ainvoke([
+    HumanMessage(
+        f"Did the user struggle? Answer with true or false (boolean, not string).\n"
+        f"Question: {input}\n"
+        f"Answer: {response.content}"
+    )
+])
     updated_struggles = dict(struggle_signal or {})
     if struggle_response.struggled:
         updated_struggles[input] = struggle_response.reason
@@ -123,3 +142,35 @@ async def study_session_node(state:VaultLearnState) -> VaultLearnState:
 async def end_session_node(state:VaultLearnState)  -> VaultLearnState:
     message = state["messages"]
     struggle_signal = state["struggle_signals"]
+    
+
+async def write_notes_node(state:VaultLearnState) -> VaultLearnState:
+    study_plan  = state["study_plan"]
+    message = state["messages"]
+    module_number = state["current_module_number"]
+    struggle_signal = state["struggle_signals"]
+    if not study_plan:
+        return {"notes_written": False}
+    session_content = await generate_session_note(study_plan, message, module_number)
+    struggle_content = generate_struggle_note(struggle_signal or {}, study_plan.title)
+    review_content = generate_review_schedule(struggle_signal or {}, study_plan.title)
+   
+    write_note(f"{study_plan.title}_session", session_content)
+    write_note(f"{study_plan.title}_struggles", struggle_content)
+    write_note(f"{study_plan.title}_review", review_content)
+    
+    return {"notes_written": True}
+
+def read_vault_node(state: VaultLearnState) -> VaultLearnState:
+    title = state["study_plan"].title
+    context_session = read_note(f"{title}_session") or ""
+    context_struggles = read_note(f"{title}_struggles") or ""
+    context_review = read_note(f"{title}_review") or ""
+    
+    
+    context = f" session : { context_session}    struggles: {context_struggles}   review : {context_review}"
+        
+    existing = state.get("messages") or []
+    vault_message = SystemMessage(f"Previous session context:\n{context}")
+    updated_messages = [vault_message] + existing
+    return {"messages": updated_messages}

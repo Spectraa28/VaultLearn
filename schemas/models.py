@@ -1,4 +1,4 @@
-from pydantic import BaseModel , Field ,field_validator
+from pydantic import BaseModel , Field ,model_validator
 from typing import Literal
 
 class UrlResponse(BaseModel):
@@ -65,9 +65,9 @@ class StruggleSignal(BaseModel):
     struggled: bool
     reason: str
     
-    @field_validator("struggled", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def coerce_bool(cls, v):
-        if isinstance(v, str):
-            return v.lower() == "true"
-        return v
+    def coerce_struggled(cls, data):
+        if isinstance(data.get("struggled"), str):
+            data["struggled"] = data["struggled"].lower() == "true"
+        return data

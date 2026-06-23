@@ -1,0 +1,196 @@
+{
+  "main": {
+    "id": "fd3f16702802f5e0",
+    "type": "split",
+    "children": [
+      {
+        "id": "68bd42c2a72af339",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "45b9c677ec688d15",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "LangGraph Study Plan_struggles.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "LangGraph Study Plan_struggles"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "b4cc0c4485acc6f0",
+    "type": "split",
+    "children": [
+      {
+        "id": "c9d3fbae8a4de7a6",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "9d0d1f7ff9fa8715",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "7f6bbc674f99f521",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "ed87ffd056c492f6",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "11ca9e5527a1fedc",
+    "type": "split",
+    "children": [
+      {
+        "id": "88d61068f8ff5c8e",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "ab51ea7da6f8addd",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "test_note.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for test_note"
+            }
+          },
+          {
+            "id": "55c0e4034fb3c5fe",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "test_note.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from test_note"
+            }
+          },
+          {
+            "id": "c71546e86e0f3491",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "48af465c025772f7",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "7d6d49eeb412c67d",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "test_note.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of test_note"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "45b9c677ec688d15",
+  "lastOpenFiles": [
+    "Structured Learning Plan for React_review.md",
+    "Structured Learning Plan for React_struggles.md",
+    "Structured Learning Plan for React_session.md",
+    "LangGraph Study Plan_session.md",
+    "LangGraph Study Plan_struggles.md",
+    "LangGraph Study Plan_review.md",
+    "test_note.md"
+  ]
+}

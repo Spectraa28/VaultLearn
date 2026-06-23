@@ -6,16 +6,19 @@ import re
 async def fetch_page_content(url: str) -> str:
     jina_url = f"https://r.jina.ai/{url}"
     async with httpx.AsyncClient() as client:
-        response = await client.get(
-            jina_url,
-            follow_redirects=True,
-            timeout=30
-        )
-    content = response.text
-    # strip Jina metadata — content starts at first # header
-    if "# " in content:
-        content = content[content.index("# "):]
-    return content
+        try:
+            response = await client.get(
+                jina_url,
+                follow_redirects=True,
+                timeout=30
+            )
+            content = response.text
+            if "# " in content:
+                content = content[content.index("# "):]
+            return content
+        except httpx.TimeoutException:
+            return ""  # return empty, chunker will handle it
+
 
 async def chunk_page(
     url: str,
