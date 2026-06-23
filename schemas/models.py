@@ -1,4 +1,4 @@
-from pydantic import BaseModel , Field
+from pydantic import BaseModel , Field ,field_validator
 from typing import Literal
 
 class UrlResponse(BaseModel):
@@ -60,3 +60,14 @@ class PlannedStudyPlan(BaseModel):
     skills_acquired: list[str]
     disclaimer: str
     modules: list[PlannedModule]
+    
+class StruggleSignal(BaseModel):
+    struggled: bool
+    reason: str
+    
+    @field_validator("struggled", mode="before")
+    @classmethod
+    def coerce_bool(cls, v):
+        if isinstance(v, str):
+            return v.lower() == "true"
+        return v

@@ -8,4 +8,5 @@ wheels/
 
 # Virtual environments
 .venv
-.envchroma_db/
+.env
+chroma_db/

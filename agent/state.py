@@ -15,3 +15,4 @@ class VaultLearnState(TypedDict):
     struggle_scores: Optional[dict]
     notes_written: Optional[bool]
     collection: Optional[object]
+    anchor_urls: Optional[list[str]]
