@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8001:8001"
+    env_file:
+      - ./Backend/.env
+    volumes:
+      - ./Backend/vault:/app/vault
+      - ./Backend/chroma_db:/app/chroma_db
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend

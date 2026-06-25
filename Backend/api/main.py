@@ -4,6 +4,7 @@ import uuid
 from agent.graph import app as setup_graph
 from agent.session_graph import session_app
 from memory.vault import read_note,list_notes
+from fastapi.middleware.cors import CORSMiddleware
 
 
 app = FastAPI(title="VaultLearn")
@@ -16,6 +17,14 @@ class SetupRequest(BaseModel):
 class SessionRequest(BaseModel):
     message: str
     
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 @app.post("/setup")
 async def setup(request:SetupRequest):
     result = await setup_graph.ainvoke({"user_input":request.url})
