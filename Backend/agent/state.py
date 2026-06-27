@@ -16,3 +16,4 @@ class VaultLearnState(TypedDict):
     notes_written: Optional[bool]
     collection: Optional[object]
     anchor_urls: Optional[list[str]]
+    progress_queue: Optional[object]

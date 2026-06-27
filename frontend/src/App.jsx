@@ -150,30 +150,68 @@ export default function App() {
   useEffect(() => { if (booted) fetchVault(); }, [booted, notesWritten]);
 
   const handleSetup = async () => {
-    if (!url.trim() || settingUp) return;
-    setSettingUp(true);
-    setMessages([{ role: "system", content: `> CONNECTING TO ${url.trim()}...` }]);
-    setNotesWritten(false);
-    try {
-      const r = await fetch(`${API}/setup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() }),
-      });
-      const d = await r.json();
-      setSessionId(d.session_id);
-      setStudyPlan(d.study_plan);
-      setCurrentModule(1);
-      setMessages(p => [...p,
-        { role: "system", content: `> SESSION: ${d.session_id}` },
-        { role: "system", content: `> PLAN: ${d.study_plan.title} — ${d.study_plan.modules.length} MODULES — ${d.study_plan.total_estimated_hours}H` },
-        { role: "ai", content: `Index loaded. **${d.study_plan.modules.length} modules** ready.\n\nSelect a module from the sidebar and start asking questions.`, citations: [], typewrite: true },
-      ]);
-    } catch {
-      setMessages(p => [...p, { role: "system", content: "> ERROR: Failed to connect. Check URL." }]);
+  if (!url.trim() || settingUp) return;
+  setSettingUp(true);
+  setMessages([]);
+  setNotesWritten(false);
+
+  const response = await fetch(`${API}/setup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: url.trim() }),
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value);
+    const lines = text.split("\n").filter(l => l.startsWith("data: "));
+
+    for (const line of lines) {
+      const data = JSON.parse(line.replace("data: ", ""));
+
+      if (data.type === "progress") {
+  setMessages(p => {
+    const filtered = p.filter(m => m.role !== "progress");
+    return [...filtered, {
+      role: "progress",
+      content: `> [${data.current}/${data.total}] ${data.module} — ${data.page}`
+    }];
+  });
+}
+
+      if (data.type === "status") {
+        setMessages(p => {
+          const last = p[p.length - 1];
+          if (last?.role === "system") {
+            return [...p.slice(0, -1), { role: "system", content: `> ${data.message}` }];
+          }
+          return [...p, { role: "system", content: `> ${data.message}` }];
+        });
+      }
+
+      if (data.type === "done") {
+        setSessionId(data.session_id);
+        setStudyPlan(data.study_plan);
+        setCurrentModule(1);
+        setMessages(p => [...p,
+          { role: "system", content: `> SESSION: ${data.session_id}` },
+          { role: "ai", content: `Index loaded. **${data.study_plan.modules.length} modules** ready.\n\nSelect a module and start asking questions.`, citations: [], typewrite: true }
+        ]);
+      }
+
+      if (data.type === "error") {
+        setMessages(p => [...p, { role: "system", content: `> ERROR: ${data.message}` }]);
+      }
     }
-    setSettingUp(false);
-  };
+  }
+
+  setSettingUp(false);
+};
 
   const handleSend = async (override) => {
     const text = override || input.trim();
@@ -378,6 +416,11 @@ export default function App() {
               )}
               {m.role === "system" && (
                 <div style={{ color: MUTED, fontSize: 12, letterSpacing: 1 }}>{m.content}</div>
+              )}
+              {m.role === "progress" && (
+                <div style={{ color: MUTED, fontSize: 12, letterSpacing: 1, fontFamily: "JetBrains Mono, monospace" }}>
+                  {m.content}
+                </div>
               )}
               {m.role === "ai" && (
                 <div style={{ borderLeft: `2px solid ${BORD}`, paddingLeft: 20, marginLeft: 10 }}>

@@ -60,10 +60,7 @@ async def build_collection_node(state:VaultLearnState) -> VaultLearnState:
         for topic in module.topics:
             current_topic += 1
 
-            print(
-                f"[{current_topic}/{total_topics}] Chunking: {topic.title}",
-                flush=True
-            )
+            
 
             chunks = await chunk_page(
                 url=topic.source_url,
@@ -71,21 +68,19 @@ async def build_collection_node(state:VaultLearnState) -> VaultLearnState:
                 module_name=module.title,
                 topic_number=topic.topic_number
             )
-            print(
-                f"    Created {len(chunks)} chunks",
-                flush=True
-            )
-            chunks = await chunk_page(
-            url=topic.source_url,
-            module_number=module.module_number,
-            module_name=module.title,
-            topic_number=topic.topic_number
-        )
-        if not chunks:
-            print(f"    Skipped (empty)", flush=True)
-            continue
-        print(f"    Created {len(chunks)} chunks", flush=True)
-        all_chunks.extend(chunks)
+            if not chunks:
+                print(f"    Skipped (empty)", flush=True)
+                continue
+            all_chunks.extend(chunks)
+            
+            queue = state.get("progress_queue")
+            if queue:
+                await queue.put({
+                    "current": current_topic,
+                    "total": total_topics,
+                    "page": topic.title,
+                    "module": module.title
+                })
     print(f"\nFinished chunking. Total chunks: {len(all_chunks)}", flush=True)
     collection_name = study_plan.title.lower().replace(" ","-")
     
