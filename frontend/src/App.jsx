@@ -3,28 +3,50 @@ import ReactMarkdown from "react-markdown";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8001";
 
-function getSessionId(session) {
-  return session?.session_id || session?.id;
+function formatDate(value) {
+  if (!value) return "Recently";
+  try {
+    return new Date(value).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  } catch {
+    return "Recently";
+  }
 }
 
-function getSessionTitle(session) {
-  return session?.title || session?.name || session?.url || session?.root_url || "Untitled session";
+function getSessionId(session) {
+  return session?.session_id || session?.id;
 }
 
 function getSessionUrl(session) {
   return session?.url || session?.root_url || session?.source_url || "";
 }
 
-function formatDate(value) {
-  if (!value) return "Recently";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Recently";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+function getSessionTitle(session) {
+  return session?.title || session?.name || getSessionUrl(session) || "Untitled session";
 }
 
-function makeSseParser(onData) {
+function safeModules(studyPlan) {
+  return Array.isArray(studyPlan?.modules) ? studyPlan.modules : [];
+}
+
+function normalizeMessage(message) {
+  const role = message.role === "assistant" ? "ai" : message.role;
+  return {
+    role,
+    content: message.content || "",
+    citations: message.citations || message.citation || [],
+    struggles: message.struggle_signals || message.struggles || {},
+    typewrite: false,
+  };
+}
+
+function createSseParser(onData) {
   let buffer = "";
-  return function parse(chunkText) {
+
+  return function parseChunk(chunkText) {
     buffer += chunkText;
     const events = buffer.split("\n\n");
     buffer = events.pop() || "";
@@ -36,152 +58,172 @@ function makeSseParser(onData) {
       try {
         onData(JSON.parse(dataLine.replace("data: ", "")));
       } catch (error) {
-        console.error("Invalid SSE payload", dataLine, error);
+        console.error("Invalid SSE payload:", dataLine, error);
       }
     }
   };
 }
 
 async function readSseResponse(response, onData) {
-  if (!response.body) throw new Error("Streaming response body is not available");
+  if (!response.body) throw new Error("Streaming response body not available");
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  const parse = makeSseParser(onData);
+  const parse = createSseParser(onData);
 
   while (true) {
-    const { done, value } = await reader.read();
+    const { value, done } = await reader.read();
     if (done) break;
     parse(decoder.decode(value, { stream: true }));
   }
 }
 
-function Markdown({ text, theme }) {
-  const components = {
-    a: ({ href, children }) => (
-      <a href={href} target="_blank" rel="noreferrer" style={{ color: theme.accent, textDecoration: "none", fontWeight: 650, wordBreak: "break-word" }}>
-        {children}
-      </a>
-    ),
-    p: ({ children }) => <p style={{ margin: "0 0 12px", lineHeight: 1.75 }}>{children}</p>,
-    ul: ({ children }) => <ul style={{ margin: "0 0 12px", paddingLeft: 22, lineHeight: 1.75 }}>{children}</ul>,
-    ol: ({ children }) => <ol style={{ margin: "0 0 12px", paddingLeft: 22, lineHeight: 1.75 }}>{children}</ol>,
-    li: ({ children }) => <li style={{ marginBottom: 6 }}>{children}</li>,
-    strong: ({ children }) => <strong style={{ fontWeight: 750, color: theme.text }}>{children}</strong>,
-    code: ({ children }) => (
-      <code style={{ background: theme.surfaceSoft, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "2px 6px", fontSize: 13, fontFamily: "JetBrains Mono, monospace" }}>
-        {children}
-      </code>
-    ),
-    pre: ({ children }) => (
-      <pre style={{ background: theme.codeBg, border: `1px solid ${theme.border}`, borderRadius: 14, padding: 16, overflowX: "auto", margin: "12px 0", fontSize: 13, lineHeight: 1.7, fontFamily: "JetBrains Mono, monospace" }}>
-        {children}
-      </pre>
-    ),
-    blockquote: ({ children }) => (
-      <blockquote style={{ borderLeft: `3px solid ${theme.accent}`, background: theme.accentSoft, color: theme.muted, borderRadius: 12, padding: "10px 14px", margin: "12px 0" }}>
-        {children}
-      </blockquote>
-    ),
-    h1: ({ children }) => <h1 style={{ fontSize: 24, lineHeight: 1.2, margin: "8px 0 12px", fontWeight: 800 }}>{children}</h1>,
-    h2: ({ children }) => <h2 style={{ fontSize: 19, lineHeight: 1.3, margin: "8px 0 10px", fontWeight: 780 }}>{children}</h2>,
-    h3: ({ children }) => <h3 style={{ fontSize: 16, lineHeight: 1.35, margin: "8px 0 8px", fontWeight: 740 }}>{children}</h3>,
-  };
-
-  return <ReactMarkdown components={components}>{text}</ReactMarkdown>;
+function Pill({ children, variant = "neutral" }) {
+  return <span className={`pill pill-${variant}`}>{children}</span>;
 }
 
-function TypeWriter({ text, theme, active }) {
-  const [displayed, setDisplayed] = useState(active ? "" : text);
-  const [done, setDone] = useState(!active);
-  const idx = useRef(0);
-
-  useEffect(() => {
-    if (!active) {
-      setDisplayed(text);
-      setDone(true);
-      return;
-    }
-
-    setDisplayed("");
-    setDone(false);
-    idx.current = 0;
-
-    const interval = setInterval(() => {
-      if (idx.current < text.length) {
-        setDisplayed(text.slice(0, idx.current + 1));
-        idx.current += 1;
-      } else {
-        clearInterval(interval);
-        setDone(true);
-      }
-    }, 5);
-
-    return () => clearInterval(interval);
-  }, [text, active]);
-
-  if (!done) {
-    return (
-      <span style={{ whiteSpace: "pre-wrap" }}>
-        {displayed}
-        <span style={{ opacity: 0.7 }}>▋</span>
-      </span>
-    );
-  }
-
-  return <Markdown text={text} theme={theme} />;
-}
-
-function Pill({ children, color, background }) {
+function SectionTitle({ children, action }) {
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", borderRadius: 999, padding: "4px 9px", fontSize: 11, fontWeight: 750, color, background, whiteSpace: "nowrap" }}>
-      {children}
-    </span>
-  );
-}
-
-function SectionTitle({ children, theme, right }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 760, color: theme.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>{children}</div>
-      {right}
+    <div className="section-title">
+      <span>{children}</span>
+      {action}
     </div>
   );
 }
 
-function EmptyState({ theme }) {
+function MarkdownContent({ text }) {
+  const components = {
+    a: ({ href, children }) => (
+      <a className="md-link" href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    ),
+    p: ({ children }) => <p className="md-p">{children}</p>,
+    ul: ({ children }) => <ul className="md-list">{children}</ul>,
+    ol: ({ children }) => <ol className="md-list">{children}</ol>,
+    li: ({ children }) => <li className="md-li">{children}</li>,
+    strong: ({ children }) => <strong className="md-strong">{children}</strong>,
+    h1: ({ children }) => <h1 className="md-h1">{children}</h1>,
+    h2: ({ children }) => <h2 className="md-h2">{children}</h2>,
+    h3: ({ children }) => <h3 className="md-h3">{children}</h3>,
+    code: ({ children }) => <code className="inline-code">{children}</code>,
+    pre: ({ children }) => <pre className="code-block">{children}</pre>,
+    blockquote: ({ children }) => <blockquote className="blockquote">{children}</blockquote>,
+  };
+
+  return <ReactMarkdown components={components}>{text || ""}</ReactMarkdown>;
+}
+
+function TypeWriter({ text, active }) {
+  const [shown, setShown] = useState(active ? "" : text || "");
+  const [done, setDone] = useState(!active);
+  const indexRef = useRef(0);
+
+  useEffect(() => {
+    let interval;
+    const start = setTimeout(() => {
+      if (!active) {
+        setShown(text || "");
+        setDone(true);
+        return;
+      }
+
+      setShown("");
+      setDone(false);
+      indexRef.current = 0;
+
+      interval = setInterval(() => {
+        if (indexRef.current < (text || "").length) {
+          setShown((text || "").slice(0, indexRef.current + 1));
+          indexRef.current += 1;
+        } else {
+          clearInterval(interval);
+          setDone(true);
+        }
+      }, 5);
+    }, 0);
+
+    return () => {
+      clearTimeout(start);
+      clearInterval(interval);
+    };
+  }, [text, active]);
+
+  if (!done) {
+    return (
+      <span className="typewriter">
+        {shown}
+        <span className="caret">▋</span>
+      </span>
+    );
+  }
+
+  return <MarkdownContent text={text} />;
+}
+
+function EmptyState() {
   return (
-    <div style={{ maxWidth: 720, margin: "82px auto", textAlign: "center" }}>
-      <div style={{ width: 58, height: 58, borderRadius: 18, background: theme.accentSoft, color: theme.accent, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", fontWeight: 850, fontSize: 24 }}>V</div>
-      <h1 style={{ margin: "0 0 12px", fontSize: 33, lineHeight: 1.12, letterSpacing: "-0.04em", fontWeight: 840, color: theme.text }}>Learn any documentation with memory.</h1>
-      <p style={{ margin: "0 auto 24px", maxWidth: 620, color: theme.muted, fontSize: 15, lineHeight: 1.8 }}>
-        Paste a documentation URL, generate a structured study plan, ask grounded questions, and save review notes across sessions.
+    <div className="empty-state">
+      <div className="empty-logo">V</div>
+      <h1>Learn technical docs with memory.</h1>
+      <p>
+        Paste a documentation URL, generate a structured learning plan, ask grounded questions,
+        and save review notes across sessions.
       </p>
-      <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: 10 }}>
-        <Pill color={theme.accent} background={theme.accentSoft}>Persistent sessions</Pill>
-        <Pill color={theme.success} background={theme.successSoft}>Citation grounded</Pill>
-        <Pill color={theme.warning} background={theme.warningSoft}>Struggle memory</Pill>
+      <div className="empty-pills">
+        <Pill variant="accent">Persistent sessions</Pill>
+        <Pill variant="success">Citations</Pill>
+        <Pill variant="warning">Struggle memory</Pill>
       </div>
     </div>
   );
 }
 
-function ActivityPanel({ events, theme }) {
+function LiveProgressCard({ progress }) {
+  if (!progress) return null;
+
+  const current = Number(progress.current || 0);
+  const total = Number(progress.total || 0);
+  const percent = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+
   return (
-    <div className="vl-panel-card" style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 18, padding: 16, boxShadow: theme.cardShadow }}>
-      <SectionTitle theme={theme}>Agent activity</SectionTitle>
+    <div className="live-progress">
+      <div className="live-progress-head">
+        <div className="live-progress-copy">
+          <div className="live-title">{progress.label || "Processing documentation"}</div>
+          <div className="live-subtitle">{progress.module || "Preparing module"}</div>
+        </div>
+        <div className="live-count">{total > 0 ? `${current}/${total}` : "Working"}</div>
+      </div>
+
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${percent}%` }} />
+      </div>
+
+      <div className="live-footer">
+        <span>{percent}% complete</span>
+        <span title={progress.page || ""}>Current: {progress.page || "Preparing..."}</span>
+      </div>
+    </div>
+  );
+}
+
+function AgentActivity({ events }) {
+  return (
+    <div className="card">
+      <SectionTitle>Agent activity</SectionTitle>
       {events.length === 0 ? (
-        <div style={{ color: theme.muted, fontSize: 13, lineHeight: 1.7 }}>Indexing, retrieval, reranking, generation, and memory updates will appear here.</div>
+        <p className="card-empty">Setup, retrieval, reranking, and memory updates will appear here.</p>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {events.slice(-14).map((event, index) => (
-            <div key={`${event.message}-${index}`} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0", borderBottom: index === events.slice(-14).length - 1 ? "none" : `1px solid ${theme.borderSoft}` }}>
-              <div style={{ width: 20, height: 20, borderRadius: 999, background: event.type === "error" ? theme.dangerSoft : event.type === "progress" ? theme.accentSoft : theme.successSoft, color: event.type === "error" ? theme.danger : event.type === "progress" ? theme.accent : theme.success, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 850, flexShrink: 0, marginTop: 1 }}>
+        <div className="activity-list">
+          {events.slice(-8).map((event, index) => (
+            <div className="activity-item" key={`${event.message}-${index}`}>
+              <div className={`activity-dot activity-${event.type || "status"}`}>
                 {event.type === "error" ? "!" : "✓"}
               </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ color: theme.text, fontSize: 13, lineHeight: 1.45, fontWeight: 560 }}>{event.message}</div>
-                {event.meta && <div style={{ color: theme.faint, fontSize: 11, marginTop: 3, fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.meta}</div>}
+              <div className="activity-body">
+                <div className="activity-message">{event.message}</div>
+                {event.meta && <div className="activity-meta">{event.meta}</div>}
               </div>
             </div>
           ))}
@@ -191,22 +233,22 @@ function ActivityPanel({ events, theme }) {
   );
 }
 
-function SourcesPanel({ sources, theme }) {
+function SourcesPanel({ sources }) {
   const uniqueSources = [...new Set(sources || [])].slice(0, 8);
 
   return (
-    <div className="vl-panel-card" style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 18, padding: 16, boxShadow: theme.cardShadow }}>
-      <SectionTitle theme={theme}>Sources</SectionTitle>
+    <div className="card">
+      <SectionTitle>Sources</SectionTitle>
       {uniqueSources.length === 0 ? (
-        <div style={{ color: theme.muted, fontSize: 13, lineHeight: 1.7 }}>Citation links from the retrieved documentation will appear here.</div>
+        <p className="card-empty">Citations from retrieved documentation will appear here.</p>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div className="source-list">
           {uniqueSources.map((source, index) => {
             const label = source.split("#")[1] || source.split("/").filter(Boolean).pop() || "Source";
             return (
-              <a key={source} href={source} target="_blank" rel="noreferrer" style={{ display: "block", textDecoration: "none", color: theme.text, background: theme.surfaceSoft, border: `1px solid ${theme.borderSoft}`, borderRadius: 12, padding: "10px 11px", fontSize: 12, lineHeight: 1.45 }}>
-                <div style={{ color: theme.accent, fontWeight: 780, marginBottom: 4 }}>Source {index + 1}</div>
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+              <a className="source-item" href={source} target="_blank" rel="noreferrer" key={source}>
+                <span>Source {index + 1}</span>
+                <strong>{label}</strong>
               </a>
             );
           })}
@@ -216,18 +258,20 @@ function SourcesPanel({ sources, theme }) {
   );
 }
 
-function VaultPanel({ vaultFiles, theme, onOpen }) {
+function VaultPanel({ vaultFiles, onOpen }) {
   return (
-    <div className="vl-panel-card" style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 18, padding: 16, boxShadow: theme.cardShadow }}>
-      <SectionTitle theme={theme}>Vault memory</SectionTitle>
+    <div className="card">
+      <SectionTitle>Vault memory</SectionTitle>
       {vaultFiles.length === 0 ? (
-        <div style={{ color: theme.muted, fontSize: 13, lineHeight: 1.7 }}>Session notes, struggle notes, and review schedules will appear after ending a session.</div>
+        <p className="card-empty">
+          Notes, struggle summaries, and review schedules will appear after ending a session.
+        </p>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {vaultFiles.slice(0, 7).map((file) => (
-            <button key={file} onClick={() => onOpen(file)} style={{ textAlign: "left", background: theme.surfaceSoft, border: `1px solid ${theme.borderSoft}`, borderRadius: 12, padding: "10px 11px", color: theme.text, cursor: "pointer", fontSize: 12, lineHeight: 1.4 }}>
-              <div style={{ fontWeight: 740, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 3 }}>{file.replace(".md", "")}</div>
-              <div style={{ color: theme.muted, fontSize: 11 }}>Markdown note</div>
+        <div className="vault-list">
+          {vaultFiles.slice(0, 6).map((file) => (
+            <button className="vault-item" type="button" onClick={() => onOpen(file)} key={file}>
+              <strong>{file.replace(".md", "")}</strong>
+              <span>Markdown note</span>
             </button>
           ))}
         </div>
@@ -238,60 +282,54 @@ function VaultPanel({ vaultFiles, theme, onOpen }) {
 
 export default function App() {
   const [dark, setDark] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
   const [url, setUrl] = useState("");
   const [sessionId, setSessionId] = useState(null);
   const [studyPlan, setStudyPlan] = useState(null);
   const [currentModule, setCurrentModule] = useState(1);
+
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [settingUp, setSettingUp] = useState(false);
-  const [vaultFiles, setVaultFiles] = useState([]);
-  const [notesWritten, setNotesWritten] = useState(false);
   const [history, setHistory] = useState([]);
   const [histIdx, setHistIdx] = useState(-1);
+
+  const [loading, setLoading] = useState(false);
+  const [settingUp, setSettingUp] = useState(false);
+  const [notesWritten, setNotesWritten] = useState(false);
+
   const [pastSessions, setPastSessions] = useState([]);
+  const [vaultFiles, setVaultFiles] = useState([]);
   const [progressEvents, setProgressEvents] = useState([]);
+  const [liveProgress, setLiveProgress] = useState(null);
 
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
 
-  const theme = useMemo(() => ({
-    bg: dark ? "#0B1120" : "#F8FAFC",
-    sidebar: dark ? "#0F172A" : "#FFFFFF",
-    surface: dark ? "#111827" : "#FFFFFF",
-    surfaceSoft: dark ? "#1E293B" : "#F1F5F9",
-    codeBg: dark ? "#020617" : "#F8FAFC",
-    text: dark ? "#E5E7EB" : "#0F172A",
-    muted: dark ? "#94A3B8" : "#64748B",
-    faint: dark ? "#64748B" : "#94A3B8",
-    border: dark ? "#1F2937" : "#E2E8F0",
-    borderSoft: dark ? "#172033" : "#EEF2F7",
-    accent: "#4F46E5",
-    accentSoft: dark ? "rgba(79,70,229,0.18)" : "#EEF2FF",
-    success: "#059669",
-    successSoft: dark ? "rgba(5,150,105,0.16)" : "#ECFDF5",
-    warning: "#D97706",
-    warningSoft: dark ? "rgba(217,119,6,0.16)" : "#FFFBEB",
-    danger: "#DC2626",
-    dangerSoft: dark ? "rgba(220,38,38,0.16)" : "#FEF2F2",
-    cardShadow: dark ? "none" : "0 8px 30px rgba(15, 23, 42, 0.06)",
-  }), [dark]);
-
-  const modules = studyPlan?.modules || [];
+  const modules = safeModules(studyPlan);
   const activeModule = modules.find((module) => module.module_number === currentModule);
-  const latestSources = [...messages].reverse().find((message) => message.role === "ai" && message.citations?.length)?.citations || [];
+
+  const latestSources =
+    [...messages].reverse().find((message) => message.role === "ai" && message.citations?.length)
+      ?.citations || [];
+
+  const themeName = useMemo(() => (dark ? "dark" : "light"), [dark]);
 
   useEffect(() => {
-    document.body.style.background = theme.bg;
-  }, [theme.bg]);
+    document.documentElement.dataset.theme = themeName;
+    document.body.style.background = dark ? "#0B1120" : "#F8FAFC";
+  }, [themeName, dark]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, liveProgress, loading]);
 
   const addProgress = (message, type = "status", meta = null) => {
-    setProgressEvents((previous) => [...previous, { message, type, meta, createdAt: new Date().toISOString() }]);
+    setProgressEvents((previous) => [
+      ...previous,
+      { message, type, meta, createdAt: new Date().toISOString() },
+    ]);
   };
 
   const refreshSessions = async () => {
@@ -310,22 +348,32 @@ export default function App() {
       const data = await response.json();
       setVaultFiles(data.files || []);
     } catch (error) {
-      console.error("Failed to load vault", error);
+      console.error("Failed to load vault notes", error);
     }
   };
 
   useEffect(() => {
-    refreshSessions();
-    fetchVault();
+    const start = setTimeout(() => {
+      refreshSessions();
+      fetchVault();
+    }, 0);
+    return () => clearTimeout(start);
   }, []);
 
-  useEffect(() => {
-    fetchVault();
-  }, [notesWritten]);
+  const applyPersistedMessages = (persistedMessages) => {
+    if (!Array.isArray(persistedMessages) || persistedMessages.length === 0) return;
+    setMessages(persistedMessages.map(normalizeMessage));
+  };
 
   const handleSetupPayload = (data) => {
     if (data.type === "progress") {
-      addProgress(`Chunking documentation page ${data.current ?? "?"}/${data.total ?? "?"}`, "progress", `${data.module || "Module"} · ${data.page || "Page"}`);
+      setLiveProgress({
+        label: "Chunking and indexing documentation",
+        current: data.current,
+        total: data.total,
+        module: data.module,
+        page: data.page,
+      });
       return;
     }
 
@@ -336,24 +384,32 @@ export default function App() {
 
     if (data.type === "done") {
       const plan = data.study_plan || {};
-      const moduleCount = plan.modules?.length || 0;
+      const moduleCount = safeModules(plan).length;
+
       setSessionId(data.session_id);
       setStudyPlan(plan);
       setCurrentModule(1);
-      setMessages((previous) => [...previous, {
-        role: "ai",
-        content: `The documentation index is ready. I found **${moduleCount} learning modules** and prepared the session.\n\nChoose a module on the left, or ask your first question about the documentation.`,
-        citations: [],
-        typewrite: true,
-      }]);
+      setLiveProgress(null);
+      setMessages([
+        {
+          role: "ai",
+          content: `The documentation index is ready. I found **${moduleCount} learning modules** and prepared the session.\n\nChoose a module on the left, or ask your first question about the documentation.`,
+          citations: [],
+          struggles: {},
+          typewrite: true,
+        },
+      ]);
+
       addProgress("Documentation index ready", "status");
       refreshSessions();
+      setMobileSidebarOpen(false);
       return;
     }
 
     if (data.type === "error") {
+      setLiveProgress(null);
       addProgress(data.message || "Setup failed", "error");
-      setMessages((previous) => [...previous, { role: "system", content: data.message || "Setup failed. Please try another URL." }]);
+      setMessages([{ role: "system", content: data.message || "Setup failed. Try another URL." }]);
     }
   };
 
@@ -364,7 +420,9 @@ export default function App() {
     setSettingUp(true);
     setMessages([]);
     setProgressEvents([]);
+    setLiveProgress(null);
     setNotesWritten(false);
+
     addProgress("Starting documentation indexing", "status", trimmedUrl);
 
     try {
@@ -377,22 +435,40 @@ export default function App() {
       if (!response.ok) throw new Error(`Setup failed with status ${response.status}`);
 
       const contentType = response.headers.get("content-type") || "";
+
       if (contentType.includes("application/json")) {
         const data = await response.json();
-        const moduleCount = data.study_plan?.modules?.length || 0;
+        const plan = data.study_plan || {};
+        const moduleCount = safeModules(plan).length;
+
         setSessionId(data.session_id);
-        setStudyPlan(data.study_plan);
+        setStudyPlan(plan);
         setCurrentModule(1);
-        setMessages([{ role: "ai", content: `The documentation index is ready. I found **${moduleCount} learning modules** and prepared the session.\n\nChoose a module on the left, or ask your first question about the documentation.`, citations: [], typewrite: true }]);
+        setMessages([
+          {
+            role: "ai",
+            content: `The documentation index is ready. I found **${moduleCount} learning modules** and prepared the session.\n\nChoose a module on the left, or ask your first question about the documentation.`,
+            citations: [],
+            struggles: {},
+            typewrite: true,
+          },
+        ]);
         addProgress("Documentation index ready", "status");
         refreshSessions();
+        setMobileSidebarOpen(false);
       } else {
         await readSseResponse(response, handleSetupPayload);
       }
     } catch (error) {
       console.error(error);
+      setLiveProgress(null);
       addProgress(error.message || "Setup failed", "error");
-      setMessages([{ role: "system", content: "I could not index this documentation source. Try a direct documentation URL." }]);
+      setMessages([
+        {
+          role: "system",
+          content: "I could not index this documentation source. Try a direct documentation URL.",
+        },
+      ]);
     } finally {
       setSettingUp(false);
     }
@@ -406,7 +482,9 @@ export default function App() {
     setSettingUp(true);
     setMessages([]);
     setProgressEvents([]);
+    setLiveProgress(null);
     setNotesWritten(false);
+
     addProgress(`Resuming ${getSessionTitle(session)}`, "status");
 
     try {
@@ -414,35 +492,83 @@ export default function App() {
       if (!response.ok) throw new Error(`Resume failed with status ${response.status}`);
 
       const contentType = response.headers.get("content-type") || "";
+
       if (contentType.includes("application/json")) {
         const data = await response.json();
         const plan = data.study_plan || {};
-        const moduleCount = plan.modules?.length || 0;
+        const moduleCount = safeModules(plan).length;
+
         setSessionId(data.session_id || id);
         setStudyPlan(plan);
         setCurrentModule(1);
-        setMessages([{ role: "ai", content: `Resumed **${plan.title || getSessionTitle(session)}**. ${moduleCount} modules are ready.\n\nYou can continue learning from this documentation session.`, citations: [], typewrite: true }]);
+
+        if (Array.isArray(data.messages) && data.messages.length > 0) {
+          applyPersistedMessages(data.messages);
+        } else {
+          setMessages([
+            {
+              role: "ai",
+              content: `Resumed **${plan.title || getSessionTitle(session)}**. ${moduleCount} modules are ready.\n\nYou can continue learning from this documentation session.`,
+              citations: [],
+              struggles: {},
+              typewrite: true,
+            },
+          ]);
+        }
+
         addProgress("Session resumed from persisted index", "status");
+        setMobileSidebarOpen(false);
       } else {
         await readSseResponse(response, (data) => {
-          if (data.type === "status") addProgress(data.message || "Resuming session...", "status");
-          if (data.type === "progress") addProgress(`Rebuilding page ${data.current}/${data.total}`, "progress", `${data.module || "Module"} · ${data.page || "Page"}`);
-          if (data.type === "error") addProgress(data.message || "Resume failed", "error");
+          if (data.type === "progress") {
+            setLiveProgress({
+              label: "Rebuilding documentation index",
+              current: data.current,
+              total: data.total,
+              module: data.module,
+              page: data.page,
+            });
+            return;
+          }
+
+          if (data.type === "status") {
+            addProgress(data.message || "Resuming session...", "status");
+            return;
+          }
+
           if (data.type === "done") {
             const plan = data.study_plan || {};
-            const moduleCount = plan.modules?.length || 0;
+            const moduleCount = safeModules(plan).length;
+
+            setLiveProgress(null);
             setSessionId(data.session_id || id);
             setStudyPlan(plan);
             setCurrentModule(1);
-            setMessages([{ role: "ai", content: `Resumed **${plan.title || getSessionTitle(session)}**. ${moduleCount} modules are ready.\n\nYou can continue learning from this documentation session.`, citations: [], typewrite: true }]);
+            setMessages([
+              {
+                role: "ai",
+                content: `Resumed **${plan.title || getSessionTitle(session)}**. ${moduleCount} modules are ready.\n\nYou can continue learning from this documentation session.`,
+                citations: [],
+                struggles: {},
+                typewrite: true,
+              },
+            ]);
             addProgress("Session resumed", "status");
+            setMobileSidebarOpen(false);
+            return;
+          }
+
+          if (data.type === "error") {
+            setLiveProgress(null);
+            addProgress(data.message || "Resume failed", "error");
           }
         });
       }
     } catch (error) {
       console.error(error);
+      setLiveProgress(null);
       addProgress(error.message || "Resume failed", "error");
-      setMessages([{ role: "system", content: "I could not resume this session. Try indexing the URL again." }]);
+      setMessages([{ role: "system", content: "I could not resume this session. Try indexing again." }]);
     } finally {
       setSettingUp(false);
     }
@@ -458,15 +584,17 @@ export default function App() {
     setMessages((previous) => [...previous, { role: "user", content: text }]);
     setLoading(true);
 
-    addProgress("Saving user question", "status");
-    addProgress("Loading vault memory and session context", "status");
+    addProgress("Loading session context", "status");
     addProgress("Retrieving relevant documentation chunks", "progress");
 
     try {
       const response = await fetch(`${API}/session/${sessionId}/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({
+          message: text,
+          current_module_number: currentModule,
+        }),
       });
 
       if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
@@ -475,16 +603,19 @@ export default function App() {
       const data = await response.json();
       addProgress("Generated citation-grounded answer", "status");
 
-      setMessages((previous) => [...previous, {
-        role: "ai",
-        content: data.answer || "",
-        citations: data.citations || data.citation || [],
-        struggles: data.struggle_signals || {},
-        typewrite: true,
-      }]);
+      setMessages((previous) => [
+        ...previous,
+        {
+          role: "ai",
+          content: data.answer || "",
+          citations: data.citations || data.citation || [],
+          struggles: data.struggle_signals || {},
+          typewrite: true,
+        },
+      ]);
 
       if (data.struggle_signals && Object.keys(data.struggle_signals).length > 0) {
-        addProgress("Detected struggle signal and added review memory", "status");
+        addProgress("Detected struggle signal and updated review memory", "status");
       }
 
       if (data.notes_written) {
@@ -495,7 +626,10 @@ export default function App() {
     } catch (error) {
       console.error(error);
       addProgress(error.message || "Message failed", "error");
-      setMessages((previous) => [...previous, { role: "system", content: "The request failed. Please try again." }]);
+      setMessages((previous) => [
+        ...previous,
+        { role: "system", content: "The request failed. Please try again." },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -522,64 +656,1152 @@ export default function App() {
     }
   };
 
-  const priorityStyle = (priority) => {
-    if (priority === "RED") return { color: theme.danger, background: theme.dangerSoft };
-    if (priority === "YELLOW") return { color: theme.warning, background: theme.warningSoft };
-    return { color: theme.success, background: theme.successSoft };
+  const priorityVariant = (priority) => {
+    if (priority === "RED") return "danger";
+    if (priority === "YELLOW") return "warning";
+    return "success";
   };
 
-  const globalCss = `
+  const css = `
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: ${theme.bg}; }
-    button, input { font-family: inherit; }
-    input::placeholder { color: ${theme.faint}; opacity: 1; }
-    ::-webkit-scrollbar { width: 7px; height: 7px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: ${theme.border}; border-radius: 999px; }
-    .vl-button:hover { transform: translateY(-1px); box-shadow: ${dark ? "none" : "0 8px 18px rgba(79,70,229,0.18)"}; }
-    .vl-card-hover:hover { border-color: ${theme.accent} !important; background: ${theme.accentSoft} !important; }
-    @media (max-width: 1100px) { .vl-right-panel { display: none !important; } }
-    @media (max-width: 820px) {
-      .vl-app { flex-direction: column !important; }
-      .vl-sidebar { width: 100% !important; min-width: 100% !important; max-height: 42vh; border-right: none !important; border-bottom: 1px solid ${theme.border} !important; }
+
+    :root {
+      --bg: #F8FAFC;
+      --sidebar: #FFFFFF;
+      --surface: #FFFFFF;
+      --surface-soft: #F1F5F9;
+      --text: #0F172A;
+      --muted: #64748B;
+      --faint: #94A3B8;
+      --border: #E2E8F0;
+      --border-soft: #EEF2F7;
+      --accent: #4F46E5;
+      --accent-soft: #EEF2FF;
+      --success: #059669;
+      --success-soft: #ECFDF5;
+      --warning: #D97706;
+      --warning-soft: #FFFBEB;
+      --danger: #DC2626;
+      --danger-soft: #FEF2F2;
+      --shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
+    }
+
+    [data-theme="dark"] {
+      --bg: #0B1120;
+      --sidebar: #0F172A;
+      --surface: #111827;
+      --surface-soft: #1E293B;
+      --text: #E5E7EB;
+      --muted: #94A3B8;
+      --faint: #64748B;
+      --border: #1F2937;
+      --border-soft: #172033;
+      --accent: #818CF8;
+      --accent-soft: rgba(129, 140, 248, 0.16);
+      --success: #34D399;
+      --success-soft: rgba(52, 211, 153, 0.14);
+      --warning: #FBBF24;
+      --warning-soft: rgba(251, 191, 36, 0.14);
+      --danger: #F87171;
+      --danger-soft: rgba(248, 113, 113, 0.14);
+      --shadow: none;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body,
+    #root {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    button,
+    input {
+      font-family: inherit;
+    }
+
+    button {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    input::placeholder {
+      color: var(--faint);
+      opacity: 1;
+    }
+
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 999px;
+    }
+
+    .app-shell {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(280px, 320px);
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    .mobile-bar {
+      display: none;
+    }
+
+    .sidebar {
+      min-width: 0;
+      overflow-y: auto;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      z-index: 40;
+    }
+
+    .main {
+      min-width: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .details {
+      min-width: 0;
+      overflow-y: auto;
+      background: var(--bg);
+      border-left: 1px solid var(--border);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .brand {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-left {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      min-width: 0;
+    }
+
+    .logo {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      background: var(--accent);
+      color: white;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      font-weight: 850;
+      flex: 0 0 auto;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 820;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .theme-button,
+    .icon-button {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      border-radius: 10px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .panel,
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel {
+      padding: 14px;
+    }
+
+    .card {
+      padding: 16px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 10px;
+    }
+
+    .url-input {
+      width: 100%;
+      background: var(--surface-soft);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+      margin-bottom: 10px;
+    }
+
+    .url-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .primary-button {
+      width: 100%;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: var(--accent);
+      color: white;
+      font-size: 14px;
+      font-weight: 760;
+      cursor: pointer;
+    }
+
+    .primary-button:disabled {
+      background: var(--surface-soft);
+      color: var(--muted);
+      cursor: not-allowed;
+    }
+
+    .danger-button {
+      width: 100%;
+      margin-top: 12px;
+      border: 1px solid var(--danger-soft);
+      border-radius: 12px;
+      padding: 11px 14px;
+      background: var(--danger-soft);
+      color: var(--danger);
+      font-size: 14px;
+      font-weight: 720;
+      cursor: pointer;
+    }
+
+    .session-list,
+    .module-list,
+    .activity-list,
+    .source-list,
+    .vault-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .session-item,
+    .module-item {
+      width: 100%;
+      min-width: 0;
+      text-align: left;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 11px 12px;
+      cursor: pointer;
+    }
+
+    .session-item:hover,
+    .module-item:hover,
+    .module-item-active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .session-title,
+    .module-title {
+      font-size: 13px;
+      font-weight: 720;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    .session-meta,
+    .module-meta {
+      color: var(--muted);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-top: 4px;
+    }
+
+    .module-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .module-num {
+      font-family: "JetBrains Mono", monospace;
+      color: var(--accent);
+      font-weight: 760;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+
+    .pill-neutral { color: var(--muted); background: var(--surface-soft); }
+    .pill-accent { color: var(--accent); background: var(--accent-soft); }
+    .pill-success { color: var(--success); background: var(--success-soft); }
+    .pill-warning { color: var(--warning); background: var(--warning-soft); }
+    .pill-danger { color: var(--danger); background: var(--danger-soft); }
+
+    .header {
+      min-height: 70px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-shrink: 0;
+      min-width: 0;
+    }
+
+    .header-main {
+      min-width: 0;
+    }
+
+    .header-title {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 0;
+      font-size: 17px;
+      font-weight: 780;
+      letter-spacing: -0.02em;
+      min-width: 0;
+    }
+
+    .header-subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+
+    .session-id {
+      color: var(--faint);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+    }
+
+    .chat-area {
+      flex: 1;
+      overflow-y: auto;
+      min-width: 0;
+      padding: 26px 24px;
+    }
+
+    .chat-inner {
+      width: min(100%, 900px);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      min-width: 0;
+    }
+
+    .empty-state {
+      width: min(100%, 720px);
+      margin: 80px auto;
+      text-align: center;
+      padding: 0 12px;
+    }
+
+    .empty-logo {
+      width: 56px;
+      height: 56px;
+      border-radius: 18px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      display: grid;
+      place-items: center;
+      font-weight: 850;
+      font-size: 24px;
+      margin: 0 auto 20px;
+    }
+
+    .empty-state h1 {
+      margin: 0 0 12px;
+      font-size: clamp(25px, 4vw, 32px);
+      line-height: 1.15;
+      font-weight: 820;
+      letter-spacing: -0.04em;
+    }
+
+    .empty-state p {
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.8;
+      max-width: 620px;
+      margin: 0 auto 24px;
+    }
+
+    .empty-pills {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .live-progress {
+      width: min(100%, 900px);
+      margin: 0 auto 18px;
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
+
+    .live-progress-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
+      min-width: 0;
+      margin-bottom: 12px;
+    }
+
+    .live-progress-copy {
+      min-width: 0;
+    }
+
+    .live-title {
+      font-size: 14px;
+      font-weight: 760;
+    }
+
+    .live-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .live-count {
+      color: var(--accent);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+      font-weight: 760;
+      flex: 0 0 auto;
+    }
+
+    .progress-track {
+      height: 8px;
+      background: var(--surface-soft);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 999px;
+      transition: width 0.18s ease;
+    }
+
+    .live-footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 0;
+    }
+
+    .live-footer span:last-child {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .message-row {
+      display: flex;
+      min-width: 0;
+    }
+
+    .message-row-user {
+      justify-content: flex-end;
+    }
+
+    .message-row-ai {
+      justify-content: flex-start;
+    }
+
+    .message-user {
+      max-width: min(74%, 680px);
+      min-width: 0;
+      background: var(--accent);
+      color: white;
+      padding: 13px 15px;
+      border-radius: 18px 18px 5px 18px;
+      font-size: 14px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message-ai {
+      max-width: min(82%, 760px);
+      min-width: 0;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 18px 18px 18px 5px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+      font-size: 14px;
+      line-height: 1.75;
+      overflow-wrap: anywhere;
+    }
+
+    .message-ai-head {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 12px;
+    }
+
+    .message-ai-logo {
+      width: 26px;
+      height: 26px;
+      border-radius: 9px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      display: grid;
+      place-items: center;
+      font-weight: 850;
+      font-size: 13px;
+      flex: 0 0 auto;
+    }
+
+    .message-ai-name {
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .system-message {
+      display: flex;
+      justify-content: center;
+    }
+
+    .system-bubble {
+      background: var(--warning-soft);
+      color: var(--warning);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 650;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .citations {
+      margin-top: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .citation-link {
+      max-width: 230px;
+      color: var(--accent);
+      background: var(--accent-soft);
+      border: 1px solid var(--border-soft);
+      border-radius: 999px;
+      padding: 7px 10px;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .struggle {
+      margin-top: 14px;
+      color: var(--warning);
+      background: var(--warning-soft);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 680;
+    }
+
+    .loading-bubble {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      border-radius: 18px 18px 18px 5px;
+      color: var(--muted);
+      padding: 14px 16px;
+      font-size: 14px;
+    }
+
+    .input-footer {
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      padding: 16px 20px;
+      flex-shrink: 0;
+      min-width: 0;
+    }
+
+    .input-wrap {
+      width: min(100%, 900px);
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 9px;
+      min-width: 0;
+    }
+
+    .chat-input {
+      flex: 1;
+      min-width: 0;
+      background: transparent;
+      border: 0;
+      outline: 0;
+      color: var(--text);
+      font-size: 14px;
+      padding: 8px;
+    }
+
+    .send-button {
+      border: 0;
+      border-radius: 13px;
+      background: var(--accent);
+      color: white;
+      padding: 10px 15px;
+      font-size: 14px;
+      font-weight: 760;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+
+    .send-button:disabled {
+      background: var(--surface-soft);
+      color: var(--muted);
+      cursor: not-allowed;
+    }
+
+    .card-empty {
+      color: var(--muted);
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .activity-item {
+      display: flex;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-soft);
+      min-width: 0;
+    }
+
+    .activity-item:last-child {
+      border-bottom: 0;
+    }
+
+    .activity-dot {
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 850;
+      flex: 0 0 auto;
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .activity-progress {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .activity-error {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .activity-body {
+      min-width: 0;
+    }
+
+    .activity-message {
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 520;
+    }
+
+    .activity-meta {
+      margin-top: 3px;
+      color: var(--faint);
+      font-size: 11px;
+      font-family: "JetBrains Mono", monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .source-item,
+    .vault-item {
+      width: 100%;
+      text-align: left;
+      display: block;
+      color: var(--text);
+      background: var(--surface-soft);
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      padding: 10px 11px;
+      font-size: 12px;
+      line-height: 1.5;
+      text-decoration: none;
+      cursor: pointer;
+      min-width: 0;
+    }
+
+    .source-item span,
+    .vault-item span {
+      display: block;
+      color: var(--accent);
+      font-weight: 750;
+      margin-bottom: 4px;
+    }
+
+    .source-item strong,
+    .vault-item strong {
+      display: block;
+      color: var(--text);
+      font-weight: 650;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .md-link { color: var(--accent); font-weight: 650; text-decoration: none; word-break: break-word; }
+    .md-p { margin: 0 0 12px; line-height: 1.75; }
+    .md-list { padding-left: 22px; margin: 0 0 12px; line-height: 1.75; }
+    .md-li { margin-bottom: 6px; }
+    .md-strong { color: var(--text); font-weight: 760; }
+    .md-h1, .md-h2, .md-h3 { color: var(--text); margin: 8px 0 10px; line-height: 1.3; }
+    .md-h1 { font-size: 22px; }
+    .md-h2 { font-size: 18px; }
+    .md-h3 { font-size: 16px; }
+
+    .inline-code {
+      background: var(--surface-soft);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+    }
+
+    .code-block {
+      max-width: 100%;
+      overflow-x: auto;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin: 12px 0;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .blockquote {
+      border-left: 3px solid var(--accent);
+      background: var(--accent-soft);
+      color: var(--muted);
+      border-radius: 10px;
+      padding: 10px 14px;
+      margin: 12px 0;
+    }
+
+    .typewriter { white-space: pre-wrap; }
+    .caret { opacity: 0.75; animation: blink 1s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    .drawer-overlay {
+      display: none;
+    }
+
+    .details-drawer {
+      display: none;
+    }
+
+    @media (max-width: 1240px) {
+      .app-shell {
+        grid-template-columns: minmax(250px, 290px) minmax(0, 1fr);
+      }
+
+      .details {
+        display: none;
+      }
+
+      .header-actions .details-toggle {
+        display: inline-flex;
+      }
+
+      .details-drawer {
+        display: flex;
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: min(88vw, 360px);
+        height: 100%;
+        z-index: 60;
+        background: var(--bg);
+        border-left: 1px solid var(--border);
+        padding: 18px;
+        overflow-y: auto;
+        flex-direction: column;
+        gap: 14px;
+        transform: translateX(105%);
+        transition: transform 0.2s ease;
+      }
+
+      .details-drawer-open {
+        transform: translateX(0);
+      }
+
+      .drawer-overlay {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        background: rgba(15, 23, 42, 0.35);
+      }
+    }
+
+    @media (min-width: 1241px) {
+      .details-toggle {
+        display: none;
+      }
+    }
+
+    @media (max-width: 780px) {
+      .app-shell {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+
+      .mobile-bar {
+        display: flex;
+        height: 58px;
+        flex: 0 0 58px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        padding: 10px 12px;
+        z-index: 35;
+      }
+
+      .mobile-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .mobile-title strong {
+        display: block;
+        font-size: 15px;
+      }
+
+      .mobile-title span {
+        display: block;
+        max-width: 190px;
+        color: var(--muted);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .sidebar {
+        position: fixed;
+        top: 58px;
+        left: 0;
+        bottom: 0;
+        width: min(88vw, 340px);
+        transform: translateX(-105%);
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.22);
+        transition: transform 0.2s ease;
+      }
+
+      .sidebar-open {
+        transform: translateX(0);
+      }
+
+      .sidebar-overlay {
+        display: block;
+        position: fixed;
+        top: 58px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(15, 23, 42, 0.35);
+        z-index: 30;
+      }
+
+      .main {
+        flex: 1;
+        height: calc(100% - 58px);
+      }
+
+      .header {
+        min-height: auto;
+        padding: 12px 14px;
+        align-items: flex-start;
+      }
+
+      .header-title {
+        font-size: 15px;
+      }
+
+      .header-subtitle {
+        white-space: normal;
+        line-height: 1.4;
+      }
+
+      .header-actions {
+        gap: 6px;
+      }
+
+      .session-id {
+        display: none;
+      }
+
+      .chat-area {
+        padding: 16px 12px;
+      }
+
+      .chat-inner {
+        gap: 14px;
+      }
+
+      .empty-state {
+        margin: 42px auto;
+      }
+
+      .empty-state p {
+        font-size: 14px;
+      }
+
+      .live-progress {
+        padding: 14px;
+      }
+
+      .live-progress-head,
+      .live-footer {
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .live-subtitle,
+      .live-footer span:last-child {
+        white-space: normal;
+      }
+
+      .message-user,
+      .message-ai {
+        max-width: 100%;
+        font-size: 14px;
+      }
+
+      .input-footer {
+        padding: 12px;
+      }
+
+      .input-wrap {
+        border-radius: 15px;
+      }
+
+      .send-button {
+        padding: 10px 12px;
+      }
     }
   `;
 
-  return (
-    <div className="vl-app" style={{ display: "flex", height: "100vh", overflow: "hidden", background: theme.bg, color: theme.text }}>
-      <style>{globalCss}</style>
+  const detailsContent = (
+    <>
+      <AgentActivity events={progressEvents} />
+      <SourcesPanel sources={latestSources} />
+      <VaultPanel vaultFiles={vaultFiles} onOpen={(file) => window.open(`${API}/vault/${file}`, "_blank")} />
+    </>
+  );
 
-      <aside className="vl-sidebar" style={{ width: 330, minWidth: 330, background: theme.sidebar, borderRight: `1px solid ${theme.border}`, display: "flex", flexDirection: "column", gap: 18, padding: 20, overflowY: "auto" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 12, background: theme.accent, color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 850, fontSize: 18 }}>V</div>
-            <div>
-              <div style={{ fontSize: 18, fontWeight: 820, letterSpacing: "-0.02em" }}>VaultLearn</div>
-              <div style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>AI documentation workspace</div>
+  return (
+    <div className="app-shell">
+      <style>{css}</style>
+
+      <div className="mobile-bar">
+        <button className="icon-button" type="button" onClick={() => setMobileSidebarOpen(true)}>
+          Menu
+        </button>
+
+        <div className="mobile-title">
+          <div className="logo">V</div>
+          <div>
+            <strong>VaultLearn</strong>
+            <span>{activeModule ? activeModule.title : "AI documentation workspace"}</span>
+          </div>
+        </div>
+
+        <button className="icon-button" type="button" onClick={() => setDetailsOpen(true)}>
+          Details
+        </button>
+      </div>
+
+      {mobileSidebarOpen && (
+        <div className="sidebar-overlay" onClick={() => setMobileSidebarOpen(false)} />
+      )}
+
+      <aside className={`sidebar ${mobileSidebarOpen ? "sidebar-open" : ""}`}>
+        <div className="brand">
+          <div className="brand-left">
+            <div className="logo">V</div>
+            <div style={{ minWidth: 0 }}>
+              <div className="brand-title">VaultLearn</div>
+              <div className="brand-subtitle">AI documentation workspace</div>
             </div>
           </div>
-          <button onClick={() => setDark((value) => !value)} style={{ border: `1px solid ${theme.border}`, background: theme.surface, color: theme.muted, borderRadius: 10, padding: "8px 10px", cursor: "pointer", fontSize: 12, fontWeight: 680 }}>
+
+          <button className="theme-button" type="button" onClick={() => setDark((value) => !value)}>
             {dark ? "Light" : "Dark"}
           </button>
         </div>
 
-        <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 18, padding: 14, boxShadow: theme.cardShadow }}>
-          <SectionTitle theme={theme}>Documentation source</SectionTitle>
-          <input placeholder="https://fastapi.tiangolo.com" value={url} onChange={(event) => setUrl(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") handleSetup(); }} style={{ width: "100%", background: theme.surfaceSoft, border: `1px solid ${theme.border}`, borderRadius: 12, padding: "12px 12px", color: theme.text, fontSize: 14, outline: "none", marginBottom: 10 }} />
-          <button className="vl-button" onClick={handleSetup} disabled={settingUp || !url.trim()} style={{ width: "100%", background: settingUp || !url.trim() ? theme.surfaceSoft : theme.accent, color: settingUp || !url.trim() ? theme.muted : "white", border: "none", borderRadius: 12, padding: "12px 14px", fontSize: 14, fontWeight: 760, cursor: settingUp || !url.trim() ? "not-allowed" : "pointer", transition: "all 0.16s ease" }}>
+        <div className="panel">
+          <SectionTitle>Documentation source</SectionTitle>
+          <input
+            className="url-input"
+            placeholder="https://fastapi.tiangolo.com"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") handleSetup();
+            }}
+          />
+
+          <button
+            className="primary-button"
+            type="button"
+            disabled={settingUp || !url.trim()}
+            onClick={handleSetup}
+          >
             {settingUp ? "Indexing documentation..." : "Index documentation"}
           </button>
         </div>
 
         {pastSessions.length > 0 && !studyPlan && (
           <div>
-            <SectionTitle theme={theme}>Recent sessions</SectionTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <SectionTitle>Recent sessions</SectionTitle>
+            <div className="session-list">
               {pastSessions.slice(0, 8).map((session) => (
-                <button key={getSessionId(session)} className="vl-card-hover" onClick={() => handleResume(session)} style={{ textAlign: "left", background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 14, padding: "11px 12px", color: theme.text, cursor: "pointer", transition: "all 0.14s ease", boxShadow: theme.cardShadow }}>
-                  <div style={{ fontSize: 13, fontWeight: 740, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{getSessionTitle(session)}</div>
-                  <div style={{ fontSize: 11, color: theme.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{formatDate(session.created_at || session.updated_at)} · {getSessionUrl(session)}</div>
+                <button
+                  className="session-item"
+                  type="button"
+                  key={getSessionId(session)}
+                  onClick={() => handleResume(session)}
+                >
+                  <div className="session-title">{getSessionTitle(session)}</div>
+                  <div className="session-meta">
+                    {formatDate(session.created_at || session.updated_at)} · {getSessionUrl(session)}
+                  </div>
                 </button>
               ))}
             </div>
@@ -588,88 +1810,119 @@ export default function App() {
 
         {studyPlan && (
           <div>
-            <SectionTitle theme={theme} right={<span style={{ fontSize: 12, color: theme.muted }}>{modules.length} modules</span>}>Learning modules</SectionTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <SectionTitle action={<span>{modules.length} modules</span>}>Learning modules</SectionTitle>
+
+            <div className="module-list">
               {modules.map((module) => {
                 const active = currentModule === module.module_number;
-                const style = priorityStyle(module.priority);
+
                 return (
-                  <button key={module.module_number} onClick={() => setCurrentModule(module.module_number)} style={{ textAlign: "left", background: active ? theme.accentSoft : theme.surface, border: `1px solid ${active ? theme.accent : theme.border}`, borderRadius: 14, padding: "11px 12px", color: theme.text, cursor: "pointer", transition: "all 0.14s ease" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <span style={{ color: active ? theme.accent : theme.muted, fontSize: 12, fontWeight: 780, fontFamily: "JetBrains Mono, monospace" }}>{String(module.module_number).padStart(2, "0")}</span>
-                      <span style={{ flex: 1, fontSize: 13, fontWeight: 740, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{module.title}</span>
+                  <button
+                    className={`module-item ${active ? "module-item-active" : ""}`}
+                    type="button"
+                    key={module.module_number}
+                    onClick={() => {
+                      setCurrentModule(module.module_number);
+                      setMobileSidebarOpen(false);
+                    }}
+                  >
+                    <div className="module-top">
+                      <span className="module-num">{String(module.module_number).padStart(2, "0")}</span>
+                      <span className="module-title">{module.title}</span>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Pill color={style.color} background={style.background}>{module.priority || "MODULE"}</Pill>
-                      {module.estimated_hours && <span style={{ color: theme.muted, fontSize: 11 }}>{module.estimated_hours}h</span>}
+
+                    <div className="module-meta">
+                      <Pill variant={priorityVariant(module.priority)}>{module.priority || "MODULE"}</Pill>
+                      {module.estimated_hours && <span style={{ marginLeft: 8 }}>{module.estimated_hours}h</span>}
                     </div>
                   </button>
                 );
               })}
             </div>
-            <button onClick={() => handleSend("end session")} style={{ marginTop: 12, width: "100%", background: theme.dangerSoft, color: theme.danger, border: `1px solid ${theme.dangerSoft}`, borderRadius: 12, padding: "11px 14px", fontSize: 14, fontWeight: 740, cursor: "pointer" }}>
+
+            <button className="danger-button" type="button" onClick={() => handleSend("end session")}>
               End session and write vault notes
             </button>
           </div>
         )}
       </aside>
 
-      <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <header style={{ height: 70, padding: "0 26px", borderBottom: `1px solid ${theme.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 18, background: theme.bg }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <h2 style={{ fontSize: 17, fontWeight: 790, margin: 0, letterSpacing: "-0.02em" }}>{studyPlan?.title || "Documentation learning session"}</h2>
-              {sessionId && <Pill color={theme.success} background={theme.successSoft}>Active</Pill>}
-            </div>
-            <div style={{ color: theme.muted, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 740 }}>
-              {activeModule ? `Module ${String(currentModule).padStart(2, "0")} · ${activeModule.title}` : "Index a documentation source or resume a previous session."}
+      <main className="main">
+        <header className="header">
+          <div className="header-main">
+            <h2 className="header-title">
+              {studyPlan?.title || "Documentation learning session"}
+              {sessionId && <Pill variant="success">Active</Pill>}
+            </h2>
+            <div className="header-subtitle">
+              {activeModule
+                ? `Module ${String(currentModule).padStart(2, "0")} · ${activeModule.title}`
+                : "Index a documentation source or resume a previous session."}
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            {notesWritten && <Pill color={theme.success} background={theme.successSoft}>Notes saved</Pill>}
-            {sessionId && <span style={{ color: theme.faint, fontSize: 12, fontFamily: "JetBrains Mono, monospace" }}>{sessionId.slice(0, 8)}</span>}
+
+          <div className="header-actions">
+            {notesWritten && <Pill variant="success">Notes saved</Pill>}
+            {sessionId && <span className="session-id">{sessionId.slice(0, 8)}</span>}
+            <button className="icon-button details-toggle" type="button" onClick={() => setDetailsOpen(true)}>
+              Details
+            </button>
           </div>
         </header>
 
-        <section onClick={() => inputRef.current?.focus()} style={{ flex: 1, overflowY: "auto", padding: "28px 30px" }}>
+        <section className="chat-area" onClick={() => inputRef.current?.focus()}>
+          {liveProgress && <LiveProgressCard progress={liveProgress} />}
+
           {messages.length === 0 ? (
-            <EmptyState theme={theme} />
+            <EmptyState />
           ) : (
-            <div style={{ maxWidth: 920, margin: "0 auto", display: "flex", flexDirection: "column", gap: 18 }}>
+            <div className="chat-inner">
               {messages.map((message, index) => {
                 const isLast = index === messages.length - 1;
+
                 if (message.role === "user") {
                   return (
-                    <div key={index} style={{ display: "flex", justifyContent: "flex-end" }}>
-                      <div style={{ maxWidth: "74%", background: theme.accent, color: "white", padding: "13px 15px", borderRadius: "18px 18px 5px 18px", fontSize: 14, lineHeight: 1.65, boxShadow: dark ? "none" : "0 8px 20px rgba(79,70,229,0.18)" }}>{message.content}</div>
+                    <div className="message-row message-row-user" key={index}>
+                      <div className="message-user">{message.content}</div>
                     </div>
                   );
                 }
 
                 if (message.role === "system") {
                   return (
-                    <div key={index} style={{ display: "flex", justifyContent: "center" }}>
-                      <div style={{ background: theme.warningSoft, color: theme.warning, borderRadius: 999, padding: "8px 12px", fontSize: 12, fontWeight: 680 }}>{message.content}</div>
+                    <div className="system-message" key={index}>
+                      <div className="system-bubble">{message.content}</div>
                     </div>
                   );
                 }
 
                 if (message.role === "ai") {
                   return (
-                    <div key={index} style={{ display: "flex", justifyContent: "flex-start" }}>
-                      <div style={{ maxWidth: "82%", background: theme.surface, color: theme.text, border: `1px solid ${theme.border}`, boxShadow: theme.cardShadow, padding: 18, borderRadius: "18px 18px 18px 5px", fontSize: 14, lineHeight: 1.75 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
-                          <div style={{ width: 26, height: 26, borderRadius: 9, background: theme.accentSoft, color: theme.accent, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 850, fontSize: 13 }}>V</div>
-                          <div style={{ fontSize: 13, fontWeight: 760, color: theme.text }}>VaultLearn</div>
+                    <div className="message-row message-row-ai" key={index}>
+                      <div className="message-ai">
+                        <div className="message-ai-head">
+                          <div className="message-ai-logo">V</div>
+                          <div className="message-ai-name">VaultLearn</div>
                         </div>
-                        <TypeWriter text={message.content || ""} theme={theme} active={message.typewrite && isLast} />
+
+                        <TypeWriter text={message.content || ""} active={Boolean(message.typewrite && isLast)} />
 
                         {message.citations?.length > 0 && (
-                          <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          <div className="citations">
                             {[...new Set(message.citations)].slice(0, 5).map((citation, citationIndex) => {
-                              const label = citation.split("#")[1] || citation.split("/").filter(Boolean).pop() || "Source";
+                              const label =
+                                citation.split("#")[1] ||
+                                citation.split("/").filter(Boolean).pop() ||
+                                "Source";
+
                               return (
-                                <a key={citation} href={citation} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: theme.accent, background: theme.accentSoft, border: `1px solid ${theme.borderSoft}`, padding: "7px 10px", borderRadius: 999, textDecoration: "none", fontWeight: 740, maxWidth: 230, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                <a
+                                  className="citation-link"
+                                  key={citation}
+                                  href={citation}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
                                   {citationIndex + 1}. {label}
                                 </a>
                               );
@@ -678,7 +1931,7 @@ export default function App() {
                         )}
 
                         {message.struggles && Object.keys(message.struggles).length > 0 && (
-                          <div style={{ marginTop: 14, fontSize: 13, color: theme.warning, background: theme.warningSoft, padding: "10px 12px", borderRadius: 12, fontWeight: 700 }}>Struggle signal detected — added to review memory.</div>
+                          <div className="struggle">Struggle signal detected — added to review memory.</div>
                         )}
                       </div>
                     </div>
@@ -689,28 +1942,59 @@ export default function App() {
               })}
 
               {loading && (
-                <div style={{ display: "flex", justifyContent: "flex-start" }}>
-                  <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, boxShadow: theme.cardShadow, padding: "14px 16px", borderRadius: "18px 18px 18px 5px", color: theme.muted, fontSize: 14 }}>Thinking through the documentation...</div>
+                <div className="message-row message-row-ai">
+                  <div className="loading-bubble">Thinking through the documentation...</div>
                 </div>
               )}
+
               <div ref={bottomRef} />
             </div>
           )}
         </section>
 
-        <footer style={{ borderTop: `1px solid ${theme.border}`, background: theme.surface, padding: 18 }}>
-          <div style={{ maxWidth: 920, margin: "0 auto", display: "flex", gap: 12, alignItems: "center", background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 18, padding: 10 }}>
-            <input ref={inputRef} placeholder={sessionId ? "Ask about this documentation..." : "Index or resume a documentation session first..."} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleKeyDown} disabled={!sessionId || loading} style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", color: theme.text, fontSize: 14, outline: "none", padding: "8px 8px" }} />
-            <button onClick={() => handleSend()} disabled={!sessionId || loading || !input.trim()} style={{ background: !sessionId || loading || !input.trim() ? theme.surfaceSoft : theme.accent, color: !sessionId || loading || !input.trim() ? theme.muted : "white", border: "none", borderRadius: 13, padding: "10px 15px", fontSize: 14, fontWeight: 760, cursor: !sessionId || loading || !input.trim() ? "not-allowed" : "pointer" }}>Send</button>
+        <footer className="input-footer">
+          <div className="input-wrap">
+            <input
+              ref={inputRef}
+              className="chat-input"
+              placeholder={sessionId ? "Ask about this documentation..." : "Index or resume a documentation session first..."}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={!sessionId || loading}
+            />
+
+            <button
+              className="send-button"
+              type="button"
+              disabled={!sessionId || loading || !input.trim()}
+              onClick={() => handleSend()}
+            >
+              Send
+            </button>
           </div>
         </footer>
       </main>
 
-      <aside className="vl-right-panel" style={{ width: 340, minWidth: 340, borderLeft: `1px solid ${theme.border}`, background: theme.bg, padding: 20, overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
-        <ActivityPanel events={progressEvents} theme={theme} />
-        <SourcesPanel sources={latestSources} theme={theme} />
-        <VaultPanel vaultFiles={vaultFiles} theme={theme} onOpen={(file) => window.open(`${API}/vault/${file}`, "_blank")} />
-      </aside>
+      <aside className="details">{detailsContent}</aside>
+
+      {detailsOpen && (
+        <>
+          <div className="drawer-overlay" onClick={() => setDetailsOpen(false)} />
+          <aside className="details-drawer details-drawer-open">
+            <div className="brand">
+              <div>
+                <div className="brand-title">Session details</div>
+                <div className="brand-subtitle">Activity, citations, and vault notes</div>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setDetailsOpen(false)}>
+                Close
+              </button>
+            </div>
+            {detailsContent}
+          </aside>
+        </>
+      )}
     </div>
   );
 }

@@ -1,20 +1,37 @@
 import os
+import re
 from pathlib import Path
 from datetime import date ,timedelta
 from schemas.models import StudyPlan
 from langchain_groq import ChatGroq
 from langchain_core.messages import  SystemMessage,HumanMessage
+from observability import SUMMARY_MODEL, tracked_invoke
+
+
+def _note_path(file_name: str) -> Path:
+    if not file_name or Path(file_name).name != file_name or "\\" in file_name or ".." in file_name:
+        raise ValueError("Invalid note filename")
+    return Path("vault") / f"{file_name}.md"
+
+
+def note_key(title: str) -> str:
+    """Turn a model-generated title into a safe, stable vault filename stem."""
+    key = re.sub(r"[^\w .-]+", "-", title, flags=re.UNICODE).strip(" .-")
+    if not key:
+        raise ValueError("Study plan title cannot be used as a note name")
+    return key[:100]
 
 def write_note(file_name: str, content:str):
-    os.makedirs("vault",exist_ok=True)
-    with open(f"vault/{file_name}.md","w",encoding="utf-8")  as file:
+    path = _note_path(file_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
         file.write(content)
         
 def read_note(file_name: str) -> str:
-    file_name = f"vault/{file_name}.md"
-    if not os.path.exists(file_name):
+    path = _note_path(file_name)
+    if not path.exists():
         return None
-    with open(file_name, "r",encoding="utf-8")  as file:
+    with path.open("r", encoding="utf-8") as file:
         return file.read()
     
 def list_notes() -> list[str]:
@@ -70,14 +87,14 @@ def generate_review_schedule(struggle_signals: dict, topic: str) -> str:
             """
 
 async def extract_key_takeaways(messages: list, topic: str) -> list[str]:
-    model = ChatGroq(model="llama-3.1-8b-instant")
+    model = ChatGroq(model=SUMMARY_MODEL)
     conversation = "\n".join([
         f"{'User' if isinstance(m, HumanMessage) else 'AI'}: {m.content}"
         for m in (messages or [])
     ])
-    response = await model.ainvoke([
+    response = await tracked_invoke(model, [
         SystemMessage("Extract 3-5 key learning points from this study session as a bullet list. Return only the points, no preamble."),
         HumanMessage(f"Topic: {topic}\n\nConversation:\n{conversation}")
-    ])
+    ], model=SUMMARY_MODEL, operation="session_summary")
     points = [line.strip("- ").strip() for line in response.content.splitlines() if line.strip()]
     return points

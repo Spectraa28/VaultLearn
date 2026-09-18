@@ -2,10 +2,19 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from sentence_transformers  import CrossEncoder
 import chromadb
 from rag.chunker import chunk_page
+from functools import lru_cache
+from time import perf_counter
+from observability import event
 
-embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 client = chromadb.PersistentClient(path="./chroma_db")
+
+@lru_cache(maxsize=1)
+def get_embedding_model():
+    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+@lru_cache(maxsize=1)
+def get_reranker():
+    return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 def build_collection(chunks: list[dict], collection_name:str):
     if not chunks:
@@ -30,7 +39,9 @@ def build_collection(chunks: list[dict], collection_name:str):
         for i in range(len(chunks))
     ]
     
-    embeddings = embedding_model.embed_documents(documents)
+    started = perf_counter()
+    embeddings = get_embedding_model().embed_documents(documents)
+    event("embedding.completed", duration_ms=(perf_counter() - started) * 1000, details={"documents": len(documents)})
     try:
         client.delete_collection(collection_name)
     except Exception:
@@ -49,7 +60,8 @@ def build_collection(chunks: list[dict], collection_name:str):
 
 def dense_retrieve(collection , query:str,module_number:int,top_k:int =5) -> list[dict]:
     
-    query_embedding = embedding_model.embed_query(query)
+    started = perf_counter()
+    query_embedding = get_embedding_model().embed_query(query)
     
     result = collection.query(
         query_embeddings=[query_embedding],
@@ -57,6 +69,7 @@ def dense_retrieve(collection , query:str,module_number:int,top_k:int =5) -> lis
         where={"module_number":module_number},
         include=["documents", "metadatas","distances"]
     )
+    event("vector_query.completed", duration_ms=(perf_counter() - started) * 1000, details={"module_number": module_number, "top_k": top_k})
     retrieved = []
     documents = result["documents"][0]
     metadatas = result["metadatas"][0]
@@ -81,7 +94,9 @@ def rerank(query:str,candidates:list[dict]) -> list[dict]:
         for candidate in candidates
     ]
     
-    scores = reranker.predict(pairs)
+    started = perf_counter()
+    scores = get_reranker().predict(pairs)
+    event("rerank.completed", duration_ms=(perf_counter() - started) * 1000, details={"candidates": len(candidates)})
     
     reranked = []
     

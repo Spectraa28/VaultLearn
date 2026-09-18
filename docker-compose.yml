@@ -9,9 +9,12 @@ services:
       - "8001:8001"
     env_file:
       - ./Backend/.env
+    environment:
+      VAULTLEARN_DB_PATH: /app/data/sessions.db
     volumes:
       - ./Backend/vault:/app/vault
       - ./Backend/chroma_db:/app/chroma_db
+      - vaultlearn_data:/app/data
 
   frontend:
     build:
@@ -21,3 +24,6 @@ services:
       - "3000:80"
     depends_on:
       - backend
+
+volumes:
+  vaultlearn_data:

@@ -71,3 +71,20 @@ class StruggleSignal(BaseModel):
         if isinstance(data.get("struggled"), str):
             data["struggled"] = data["struggled"].lower() == "true"
         return data
+
+
+class SessionDecision(BaseModel):
+    action: Literal["answer", "quiz"]
+    reason: str
+
+
+class QuizQuestion(BaseModel):
+    question: str
+    expected_answer: str
+    concept: str
+
+
+class QuizEvaluation(BaseModel):
+    correct: bool
+    feedback: str
+    concept: str

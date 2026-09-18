@@ -2,22 +2,51 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 from markdownify import markdownify as md
 import httpx
 import re
+import asyncio
+from bs4 import BeautifulSoup
+from rag.security import safe_request, validate_public_url
+
+
+def _usable_content(content: str) -> bool:
+    text = re.sub(r"[#*`_>\[\]()]+", " ", content).strip()
+    if len(text) < 120 or len(text.split()) < 20:
+        return False
+    start = text[:180].lower()
+    return not any(marker in start for marker in ("404 not found", "page not found", "access denied", "enable javascript"))
 
 async def fetch_page_content(url: str) -> str:
-    jina_url = f"https://r.jina.ai/{url}"
+    await asyncio.to_thread(validate_public_url, url)
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(
-                jina_url,
-                follow_redirects=True,
-                timeout=30
-            )
-            content = response.text
-            if "# " in content:
-                content = content[content.index("# "):]
-            return content
-        except httpx.TimeoutException:
-            return ""  # return empty, chunker will handle it
+            response = await safe_request(client, "GET", url, timeout=15)
+            content_type = response.headers.get("content-type", "text/html").lower()
+            if response.status_code == 200 and len(response.content) <= 5_000_000:
+                if "html" in content_type:
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    for tag in soup.select("script, style, nav, header, footer, aside, noscript"):
+                        tag.decompose()
+                    content = md(str(soup.select_one("main, article, [role=main]") or soup.body or soup))
+                elif "markdown" in content_type or "text/plain" in content_type:
+                    content = response.text
+                else:
+                    content = ""
+                if _usable_content(content):
+                    return content
+        except (httpx.HTTPError, ValueError):
+            pass
+
+        # A rendering proxy is a fallback, not the sole source of page content.
+        try:
+            response = await safe_request(client, "GET", f"https://r.jina.ai/{url}", timeout=30)
+            if response.status_code == 200 and len(response.content) <= 5_000_000:
+                content = response.text
+                if "# " in content:
+                    content = content[content.index("# "):]
+                if _usable_content(content):
+                    return content
+        except (httpx.HTTPError, ValueError):
+            pass
+    return ""
 
 
 async def chunk_page(
@@ -27,6 +56,8 @@ async def chunk_page(
     topic_number: int
 ) -> list[dict]:
     markdown = await fetch_page_content(url)
+    if not markdown.strip():
+        return []
 
     headers_to_split_on = [
         ("#", "title"),
@@ -146,4 +177,3 @@ def split_oversized_chunks(chunks: list[dict], splitter, max_chunk_size: int) ->
             final_chunks.append(new_chunk)
 
     return final_chunks
-    
