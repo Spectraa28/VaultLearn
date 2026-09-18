@@ -20,8 +20,13 @@ VaultLearn was built around that idea: not just a RAG chatbot over docs, but a l
 
 ---
 
-## Demo Flow
+## Demo 
 
+```text
+
+https://www.youtube.com/watch?v=zEogil51rxU
+
+```
 ```text
 Paste docs URL
    ↓
